@@ -1,4 +1,24 @@
-*.exe
-*.log
-*.sql
+
+# Ambientes Virtuais
+venv/
+*.env
+.env
+
+# Arquivos do Python (cache e compilados)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Bancos de dados locais
+*.db
 *.sqlite
+*.sqlite3
+
+# Arquivos de IDE
+.vscode/
+.idea/
+
+# Arquivos de sistema (Windows, macOS)
+Thumbs.db
+.DS_Store
