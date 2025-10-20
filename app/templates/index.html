@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Estufa Inteligente - Dashboard</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.4/socket.io.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        header {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 20px 30px;
+            border-radius: 15px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            margin-bottom: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        h1 {
+            color: #333;
+            font-size: 28px;
+        }
+
+        .status-badge {
+            padding: 8px 20px;
+            border-radius: 20px;
+            font-weight: bold;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-badge.online {
+            background: #10b981;
+            color: white;
+        }
+
+        .status-badge.offline {
+            background: #ef4444;
+            color: white;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: white;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 25px;
+            border-radius: 15px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            transition: transform 0.3s;
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+        }
+
+        .card-title {
+            font-size: 16px;
+            color: #666;
+            margin-bottom: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .card-value {
+            font-size: 48px;
+            font-weight: bold;
+            color: #333;
+            margin: 10px 0;
+        }
+
+        .card-unit {
+            font-size: 24px;
+            color: #999;
+        }
+
+        .card-icon {
+            font-size: 40px;
+            margin-bottom: 10px;
+        }
+
+        .temp { color: #f59e0b; }
+        .humidity { color: #3b82f6; }
+        .soil { color: #8b5cf6; }
+        .light { color: #eab308; }
+
+        .chart-container {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 25px;
+            border-radius: 15px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            margin-bottom: 30px;
+            height: 400px;
+        }
+
+        .controls {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 25px;
+            border-radius: 15px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+        }
+
+        .btn {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin: 5px;
+        }
+
+        .btn:hover {
+            background: #5568d3;
+            transform: scale(1.05);
+        }
+
+        .btn:active {
+            transform: scale(0.95);
+        }
+
+        .btn-success {
+            background: #10b981;
+        }
+
+        .btn-success:hover {
+            background: #059669;
+        }
+
+        .btn-danger {
+            background: #ef4444;
+        }
+
+        .btn-danger:hover {
+            background: #dc2626;
+        }
+
+        .alerts {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 25px;
+            border-radius: 15px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            margin-top: 30px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .alert-item {
+            padding: 12px;
+            margin: 8px 0;
+            border-radius: 8px;
+            border-left: 4px solid;
+        }
+
+        .alert-warning {
+            background: #fef3c7;
+            border-color: #f59e0b;
+        }
+
+        .alert-critical {
+            background: #fee2e2;
+            border-color: #ef4444;
+        }
+
+        .timestamp {
+            font-size: 12px;
+            color: #999;
+            margin-top: 5px;
+        }
+
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 60px;
+            height: 34px;
+            margin: 10px;
+        }
+
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: .4s;
+            border-radius: 34px;
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 26px;
+            width: 26px;
+            left: 4px;
+            bottom: 4px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+
+        input:checked + .slider {
+            background-color: #10b981;
+        }
+
+        input:checked + .slider:before {
+            transform: translateX(26px);
+        }
+
+        .control-group {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin: 15px 0;
+            padding: 15px;
+            background: #f3f4f6;
+            border-radius: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🌱 Estufa Inteligente</h1>
+            <div class="status-badge offline" id="connectionStatus">
+                <div class="status-dot"></div>
+                <span>Desconectado</span>
+            </div>
+        </header>
+
+        <div class="grid">
+            <div class="card">
+                <div class="card-icon temp">🌡️</div>
+                <div class="card-title">Temperatura</div>
+                <div class="card-value">
+                    <span id="tempValue">--</span><span class="card-unit">°C</span>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-icon humidity">💧</div>
+                <div class="card-title">Umidade do Ar</div>
+                <div class="card-value">
+                    <span id="humidValue">--</span><span class="card-unit">%</span>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-icon soil">🌾</div>
+                <div class="card-title">Umidade do Solo</div>
+                <div class="card-value">
+                    <span id="soilValue">--</span><span class="card-unit">%</span>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-icon light">☀️</div>
+                <div class="card-title">Luminosidade</div>
+                <div class="card-value">
+                    <span id="lightValue">--</span><span class="card-unit">%</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="chart-container">
+            <canvas id="sensorChart"></canvas>
+        </div>
+
+        <div class="controls">
+            <h2 style="margin-bottom: 20px;">⚙️ Controles</h2>
+            
+            <div class="control-group">
+                <div>
+                    <strong>Irrigação Automática</strong>
+                    <div class="timestamp">Ativa quando umidade do solo < 30%</div>
+                </div>
+                <label class="switch">
+                    <input type="checkbox" id="autoIrrigationToggle">
+                    <span class="slider"></span>
+                </label>
+            </div>
+
+            <div class="control-group">
+                <div>
+                    <strong>Irrigação Manual</strong>
+                    <div class="timestamp">Aciona bomba d'água por 5 segundos</div>
+                </div>
+                <button class="btn btn-success" onclick="activateIrrigation()">💧 Irrigar Agora</button>
+            </div>
+
+            <div class="control-group">
+                <div>
+                    <strong>Sistema</strong>
+                    <div class="timestamp">Verificar status e forçar atualização</div>
+                </div>
+                <div>
+                    <button class="btn" onclick="sendCommand('PING')">📡 Ping</button>
+                    <button class="btn" onclick="sendCommand('STATUS')">📊 Status</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="alerts">
+            <h2 style="margin-bottom: 15px;">⚠️ Alertas Recentes</h2>
+            <div id="alertsList">
+                <p style="color: #999;">Nenhum alerta no momento</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Configuração do WebSocket
+        const socket = io('http://localhost:5000');
+
+        // Configuração do gráfico
+        const ctx = document.getElementById('sensorChart').getContext('2d');
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    {
+                        label: 'Temperatura (°C)',
+                        data: [],
+                        borderColor: '#f59e0b',
+                        backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                        tension: 0.4
+                    },
+                    {
+                        label: 'Umidade Ar (%)',
+                        data: [],
+                        borderColor: '#3b82f6',
+                        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                        tension: 0.4
+                    },
+                    {
+                        label: 'Umidade Solo (%)',
+                        data: [],
+                        borderColor: '#8b5cf6',
+                        backgroundColor: 'rgba(139, 92, 246, 0.1)',
+                        tension: 0.4
+                    },
+                    {
+                        label: 'Luminosidade (%)',
+                        data: [],
+                        borderColor: '#eab308',
+                        backgroundColor: 'rgba(234, 179, 8, 0.1)',
+                        tension: 0.4
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'top'
+                    },
+                    title: {
+                        display: true,
+                        text: 'Histórico de Sensores (Tempo Real)'
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        max: 100
+                    }
+                }
+            }
+        });
+
+        // Eventos do WebSocket
+        socket.on('connect', () => {
+            console.log('WebSocket conectado!');
+            updateConnectionStatus(true);
+        });
+
+        socket.on('disconnect', () => {
+            console.log('WebSocket desconectado!');
+            updateConnectionStatus(false);
+        });
+
+        socket.on('sensor_data', (data) => {
+            console.log('Dados recebidos:', data);
+            updateDashboard(data);
+        });
+
+        socket.on('command_response', (response) => {
+            console.log('Resposta do comando:', response);
+            if (response.error) {
+                alert('Erro: ' + response.error);
+            }
+        });
+
+        // Funções
+        function updateConnectionStatus(isConnected) {
+            const badge = document.getElementById('connectionStatus');
+            if (isConnected) {
+                badge.className = 'status-badge online';
+                badge.querySelector('span').textContent = 'Conectado';
+            } else {
+                badge.className = 'status-badge offline';
+                badge.querySelector('span').textContent = 'Desconectado';
+            }
+        }
+
+        function updateDashboard(data) {
+            if (data.temp !== undefined) {
+                document.getElementById('tempValue').textContent = data.temp.toFixed(1);
+                document.getElementById('humidValue').textContent = data.humid.toFixed(1);
+                document.getElementById('soilValue').textContent = data.soil;
+                document.getElementById('lightValue').textContent = data.light;
+
+                // Atualiza gráfico
+                const now = new Date().toLocaleTimeString();
+                chart.data.labels.push(now);
+                chart.data.datasets[0].data.push(data.temp);
+                chart.data.datasets[1].data.push(data.humid);
+                chart.data.datasets[2].data.push(data.soil);
+                chart.data.datasets[3].data.push(data.light);
+
+                // Mantém apenas últimos 20 pontos
+                if (chart.data.labels.length > 20) {
+                    chart.data.labels.shift();
+                    chart.data.datasets.forEach(dataset => dataset.data.shift());
+                }
+
+                chart.update();
+            }
+        }
+
+        function activateIrrigation() {
+            fetch('/api/command/irrigate', { method: 'POST' })
+                .then(res => res.json())
+                .then(data => {
+                    alert(data.message || 'Irrigação ativada!');
+                })
+                .catch(err => console.error('Erro:', err));
+        }
+
+        function sendCommand(cmd) {
+            socket.emit('send_command', { command: cmd });
+        }
+
+        // Toggle de irrigação automática
+        document.getElementById('autoIrrigationToggle').addEventListener('change', function() {
+            fetch('/api/command/auto_irrigation', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enable: this.checked })
+            })
+            .then(res => res.json())
+            .then(data => console.log(data))
+            .catch(err => console.error('Erro:', err));
+        });
+
+        // Carrega alertas a cada 30 segundos
+        function loadAlerts() {
+            fetch('/api/alerts/latest?limit=5')
+                .then(res => res.json())
+                .then(alerts => {
+                    const container = document.getElementById('alertsList');
+                    if (alerts.length === 0) {
+                        container.innerHTML = '<p style="color: #999;">Nenhum alerta no momento</p>';
+                        return;
+                    }
+
+                    container.innerHTML = alerts.map(alert => `
+                        <div class="alert-item alert-${alert.severity}">
+                            <strong>${alert.alert_type}</strong>: ${alert.message}
+                            <div class="timestamp">${new Date(alert.timestamp).toLocaleString('pt-BR')}</div>
+                        </div>
+                    `).join('');
+                })
+                .catch(err => console.error('Erro ao carregar alertas:', err));
+        }
+
+        // Inicialização
+        loadAlerts();
+        setInterval(loadAlerts, 30000);
+    </script>
+</body>
+</html>
