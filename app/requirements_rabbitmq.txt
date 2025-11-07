@@ -1,0 +1,24 @@
+# Flask e extensões
+Flask==2.3.3
+Flask-SocketIO==5.3.4
+Flask-CORS==4.0.0
+python-socketio==5.9.0
+eventlet==0.33.3
+
+# Comunicação serial
+pyserial==3.5
+
+# RabbitMQ (NOVO)
+pika==1.3.2
+
+# Email (opcional - para worker de email)
+# Já vem com Python, mas pode instalar versão mais nova
+# secure-smtplib==0.1.1
+
+# SMS (opcional - descomente se for usar)
+# twilio==8.10.0
+
+# Analytics avançado (opcional)
+# pandas==2.1.3
+# numpy==1.26.2
+# scikit-learn==1.3.2

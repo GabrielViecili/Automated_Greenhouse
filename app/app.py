@@ -1,10 +1,12 @@
 from flask import Flask, render_template, jsonify, request
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
+from serial_reader import ArduinoReader
 import json
 from datetime import datetime
 import threading
 import time
+import os
 
 from database import (
     init_database, 
@@ -16,6 +18,13 @@ from database import (
     get_statistics
 )
 from serial_reader import ArduinoReader
+
+try:
+    from serial_reader_rabbitmq import ArduinoReaderWithRabbitMQ as ArduinoReader
+    print("[APP] Usando versão com RabbitMQ")
+except ImportError:
+    from serial_reader import ArduinoReader
+    print("[APP] Usando versão original (sem RabbitMQ)")
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'greenhouse_secret_2025'
