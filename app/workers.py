@@ -1,468 +1,250 @@
 """
-Workers para processar mensagens do RabbitMQ
-Execute cada worker em um processo separado
+WORKER DE NOTIFICAÇÕES - APENAS DISCORD
+Execute: python workers.py
 """
 
 import sys
 import time
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import requests
 from rabbitmq_config import RabbitMQManager
 from typing import Dict
-import json
-import requests 
-import threading
-
-# ==================== WORKER DE EMAIL ====================
-
-class EmailNotificationWorker:
-    """
-    Worker que consome alertas críticos e envia emails
-    Execute: python workers.py email
-    """
-    
-    def __init__(self):
-        self.rabbitmq = RabbitMQManager()
-        
-        # Configurações de email (ajuste conforme seu provedor)
-        self.smtp_server = "smtp.gmail.com"
-        self.smtp_port = 587
-        self.email_from = "seu-email@gmail.com"
-        self.email_password = "sua-senha-app"  # Use senha de aplicativo
-        self.email_to = ["admin@estufa.com"]
-    
-    def send_email(self, subject: str, body: str):
-        """Envia email usando SMTP"""
-        try:
-            msg = MIMEMultipart()
-            msg['From'] = self.email_from
-            msg['To'] = ', '.join(self.email_to)
-            msg['Subject'] = subject
-            
-            msg.attach(MIMEText(body, 'html'))
-            
-            with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
-                server.starttls()
-                server.login(self.email_from, self.email_password)
-                server.send_message(msg)
-            
-            print(f"[EMAIL] ✓ Email enviado: {subject}")
-            return True
-            
-        except Exception as e:
-            print(f"[EMAIL ERROR] Falha ao enviar email: {e}")
-            return False
-    
-    def process_alert(self, message: Dict):
-        """Processa um alerta e envia email"""
-        alert_type = message.get('type', 'unknown')
-        alert_message = message.get('message', '')
-        severity = message.get('severity', 'warning')
-        timestamp = message.get('timestamp', '')
-        
-        print(f"\n[EMAIL WORKER] Processando alerta crítico:")
-        print(f"  Tipo: {alert_type}")
-        print(f"  Mensagem: {alert_message}")
-        print(f"  Severidade: {severity}")
-        
-        # Monta o email
-        subject = f"🚨 ALERTA CRÍTICO - Estufa Inteligente"
-        
-        body = f"""
-        <html>
-        <body style="font-family: Arial, sans-serif;">
-            <h2 style="color: #ef4444;">⚠️ Alerta Crítico Detectado</h2>
-            
-            <div style="background: #fee2e2; padding: 20px; border-radius: 10px; margin: 20px 0;">
-                <p><strong>Tipo:</strong> {alert_type}</p>
-                <p><strong>Mensagem:</strong> {alert_message}</p>
-                <p><strong>Severidade:</strong> <span style="color: #ef4444;">{severity.upper()}</span></p>
-                <p><strong>Data/Hora:</strong> {timestamp}</p>
-            </div>
-            
-            <h3>Ações Recomendadas:</h3>
-            <ul>
-                <li>Verificar dashboard em tempo real</li>
-                <li>Inspecionar sensores físicos</li>
-                <li>Ativar irrigação se necessário</li>
-            </ul>
-            
-            <hr>
-            <p style="color: #999; font-size: 12px;">
-                Sistema de Monitoramento de Estufa Inteligente<br>
-                Este é um email automático - não responda
-            </p>
-        </body>
-        </html>
-        """
-        
-        # Envia email (descomente quando configurar SMTP)
-        # self.send_email(subject, body)
-        
-        # Por enquanto, apenas loga
-        print(f"[EMAIL] Email seria enviado para: {self.email_to}")
-    
-    def start(self):
-        """Inicia o worker"""
-        print("=" * 60)
-        print("EMAIL NOTIFICATION WORKER")
-        print("=" * 60)
-        print(f"Conectando ao RabbitMQ...")
-        
-        if self.rabbitmq.connect():
-            print(f"✓ Conectado!")
-            print(f"Aguardando alertas críticos...\n")
-            
-            try:
-                self.rabbitmq.consume(
-                    self.rabbitmq.queues['email_notifications'],
-                    self.process_alert
-                )
-            except KeyboardInterrupt:
-                print("\n\n[EMAIL WORKER] Encerrando...")
-                self.rabbitmq.disconnect()
-        else:
-            print("✗ Falha ao conectar RabbitMQ")
-
-# ==================== WORKER DE SMS ====================
-
-class SMSNotificationWorker:
-    """
-    Worker que consome alertas críticos e envia SMS
-    Execute: python workers.py sms
-    """
-    
-    def __init__(self):
-        self.rabbitmq = RabbitMQManager()
-        # Aqui você integraria com Twilio, AWS SNS, etc.
-        self.phone_numbers = ["+5554999999999"]
-    
-    def send_sms(self, message: str):
-        """Envia SMS (integrar com Twilio/AWS SNS)"""
-        try:
-            # Exemplo com Twilio:
-            # from twilio.rest import Client
-            # client = Client(account_sid, auth_token)
-            # message = client.messages.create(
-            #     body=message,
-            #     from_='+15017122661',
-            #     to='+15558675310'
-            # )
-            
-            print(f"[SMS] SMS seria enviado: {message}")
-            return True
-            
-        except Exception as e:
-            print(f"[SMS ERROR] Falha ao enviar SMS: {e}")
-            return False
-    
-    def process_alert(self, message: Dict):
-        """Processa um alerta e envia SMS"""
-        alert_type = message.get('type', 'unknown')
-        alert_message = message.get('message', '')
-        
-        print(f"\n[SMS WORKER] Alerta crítico recebido:")
-        print(f"  {alert_type}: {alert_message}")
-        
-        sms_text = f"ALERTA ESTUFA: {alert_message}"
-        self.send_sms(sms_text)
-    
-    def start(self):
-        """Inicia o worker"""
-        print("=" * 60)
-        print("SMS NOTIFICATION WORKER")
-        print("=" * 60)
-        
-        if self.rabbitmq.connect():
-            print("✓ Conectado! Aguardando alertas...\n")
-            
-            try:
-                self.rabbitmq.consume(
-                    self.rabbitmq.queues['sms_notifications'],
-                    self.process_alert
-                )
-            except KeyboardInterrupt:
-                print("\n\n[SMS WORKER] Encerrando...")
-                self.rabbitmq.disconnect()
-        else:
-            print("✗ Falha ao conectar")
-
-
-# ================== WORKER DE DISCORD ==================
 
 class DiscordNotificationWorker:
     """
-    Worker que consome alertas críticos e envia via Webhook do Discord
-    Execute: python workers.py discord
+    Worker que consome alertas críticos e envia para Discord
     """
     
-    def __init__(self):
+    def __init__(self, webhook_url=None):
         self.rabbitmq = RabbitMQManager()
-        self.webhook_url = "https://discord.com/api/webhooks/1438969223572361237/pCmaG6YYOiYrFxqqMk9IXioB6VPt2TYx2q-AV0Yj8dhUTloUobbuh46m65ao35ayXOtV" 
+        
+        # Configure seu Webhook do Discord aqui
+        # Tutorial: Discord > Server Settings > Integrations > Webhooks > New Webhook
+        self.webhook_url = webhook_url or "YOUR_DISCORD_WEBHOOK_URL_HERE"
+        
+        # Emojis para diferentes tipos de alerta
+        self.emoji_map = {
+            'arduino_connection_failed': '🔌',
+            'arduino_connection_error': '❌',
+            'arduino1_timeout': '🚨',
+            'arduino2_timeout': '⚠️',
+            'dht11_failure': '🌡️',
+            'soil_sensor_failure': '💧',
+            'ldr_sensor_failure': '☀️',
+            'high_temperature': '🔥',
+            'low_temperature': '❄️',
+            'low_soil_moisture': '🌵',
+            'low_humidity': '💨',
+            'pump_activated': '💧',
+            'cooler_activated': '❄️',
+            'cooler_deactivated': '✅',
+            'light_activated': '💡',
+            'light_deactivated': '🌞',
+            'system_reconnected': '✅',
+            'critical': '🚨',
+            'warning': '⚠️',
+            'info': 'ℹ️'
+        }
+        
+        # Cores para embeds (formato decimal)
+        self.color_map = {
+            'critical': 16711680,  # Vermelho
+            'warning': 16776960,   # Amarelo
+            'info': 3447003        # Azul
+        }
     
-    def send_discord_webhook(self, message: Dict):
-        """Envia um alerta formatado para o Discord via Webhook"""
-        
-        alert_type = message.get('type', 'desconhecido')
-        alert_message = message.get('message', 'Sem detalhes')
-        severity = message.get('severity', 'indefinida').upper()
-        timestamp = message.get('timestamp', 'agora')
-
-        # Formata a cor do "embed" baseado na severidade
-        colors = {
-            'CRITICAL': 15158332, # Vermelho
-            'WARNING': 15105570,  # Laranja
-            'INFO': 3447003       # Azul
-        }
-        
-        # Cria um "embed" para uma mensagem bonita
-        embed = {
-            "title": f"🚨 Alerta de Estufa: {alert_type}",
-            "color": colors.get(severity, 15158332), # Padrão para vermelho
-            "description": f"**{alert_message}**",
-            "fields": [
-                {"name": "Severidade", "value": severity, "inline": True},
-                {"name": "Timestamp", "value": timestamp, "inline": True}
-            ],
-            "footer": {"text": "Sistema de Monitoramento de Estufa Inteligente"}
-        }
-        
-        # Monta o payload final
-        data = {
-            "username": "Monitor da Estufa",
-            "avatar_url": "https://i.imgur.com/gJt0MS1.png", # Ícone (opcional)
-            "embeds": [embed]
-        }
-        
+    def send_discord_notification(self, alert: Dict):
+        """Envia notificação para Discord via Webhook"""
         try:
-            response = requests.post(self.webhook_url, json=data)
-            response.raise_for_status() # Lança erro se o status for 4xx ou 5xx
-            print(f"[DISCORD] ✓ Alerta enviado: {alert_type}")
-            return True
-        except requests.exceptions.RequestException as e:
-            print(f"[DISCORD ERROR] Falha ao enviar webhook: {e}")
+            alert_type = alert.get('type', 'unknown')
+            message = alert.get('message', 'Sem mensagem')
+            severity = alert.get('severity', 'info')
+            timestamp = alert.get('timestamp', '')
+            
+            # Seleciona emoji
+            emoji = self.emoji_map.get(alert_type, self.emoji_map.get(severity, '📢'))
+            
+            # Seleciona cor
+            color = self.color_map.get(severity, 3447003)
+            
+            # Monta embed do Discord
+            embed = {
+                "title": f"{emoji} Alerta do Sistema de Estufa",
+                "description": message,
+                "color": color,
+                "fields": [
+                    {
+                        "name": "Tipo",
+                        "value": alert_type.replace('_', ' ').title(),
+                        "inline": True
+                    },
+                    {
+                        "name": "Severidade",
+                        "value": severity.upper(),
+                        "inline": True
+                    },
+                    {
+                        "name": "Horário",
+                        "value": timestamp,
+                        "inline": False
+                    }
+                ],
+                "footer": {
+                    "text": "Sistema de Monitoramento de Estufa Inteligente"
+                }
+            }
+            
+            # Payload do webhook
+            payload = {
+                "username": "Estufa Bot",
+                "embeds": [embed]
+            }
+            
+            # Envia para Discord
+            response = requests.post(
+                self.webhook_url,
+                json=payload,
+                timeout=10
+            )
+            
+            if response.status_code == 204:
+                print(f"[DISCORD] ✓ Notificação enviada: {alert_type}")
+                return True
+            else:
+                print(f"[DISCORD] ✗ Erro ao enviar: {response.status_code}")
+                return False
+                
+        except Exception as e:
+            print(f"[DISCORD ERROR] Falha ao enviar notificação: {e}")
             return False
-
+    
     def process_alert(self, message: Dict):
-        """Processa um alerta e envia para o Discord"""
-        print(f"\n[DISCORD WORKER] Alerta crítico recebido:")
-        print(f"  Tipo: {message.get('type')}")
-        print(f"  Enviando para Discord...")
+        """Processa um alerta crítico"""
+        print("\n" + "=" * 60)
+        print("🚨 ALERTA CRÍTICO RECEBIDO")
+        print("=" * 60)
+        print(f"Tipo: {message.get('type')}")
+        print(f"Mensagem: {message.get('message')}")
+        print(f"Severidade: {message.get('severity')}")
+        print(f"Timestamp: {message.get('timestamp')}")
+        print("=" * 60)
         
-        self.send_discord_webhook(message)
+        # Envia para Discord
+        self.send_discord_notification(message)
     
     def start(self):
         """Inicia o worker"""
         print("=" * 60)
-        print("DISCORD NOTIFICATION WORKER")
+        print("WORKER DE NOTIFICAÇÕES DISCORD")
         print("=" * 60)
+        
+        # Verifica webhook
+        if self.webhook_url == "YOUR_DISCORD_WEBHOOK_URL_HERE":
+            print("\n⚠️  ATENÇÃO: Configure o Webhook do Discord!")
+            print("\n1. Vá para seu servidor Discord")
+            print("2. Server Settings > Integrations > Webhooks")
+            print("3. Create Webhook")
+            print("4. Copy Webhook URL")
+            print("5. Cole no código abaixo:\n")
+            print("   webhook_url = 'https://discord.com/api/webhooks/...'")
+            print("\n" + "=" * 60)
+            
+            # Continua mesmo assim (para testes)
         
         if self.rabbitmq.connect():
-            print("✓ Conectado! Aguardando alertas...\n")
+            print("✓ RabbitMQ conectado!")
+            print("Aguardando alertas críticos...\n")
             
             try:
-                # IMPORTANTE: Veja o Passo 4
-                self.rabbitmq.consume(
-                    self.rabbitmq.queues['discord_notifications'],
-                    self.process_alert
-                )
+                self.rabbitmq.consume(self.process_alert)
             except KeyboardInterrupt:
-                print("\n\n[DISCORD WORKER] Encerrando...")
+                print("\n\n[WORKER] Encerrando...")
                 self.rabbitmq.disconnect()
         else:
-            print("✗ Falha ao conectar")
+            print("✗ Falha ao conectar ao RabbitMQ")
+            print("\nVerifique se o RabbitMQ está rodando:")
+            print("  sudo systemctl status rabbitmq-server")
 
-# ==================== WORKER DE ANALYTICS ====================
+# ==================== TESTE ====================
 
-class DataAnalyticsWorker:
-    """
-    Worker que processa dados de sensores em batch para analytics
-    Execute: python workers.py analytics
-    """
+def test_discord_webhook(webhook_url):
+    """Testa o webhook do Discord"""
+    print("\n" + "=" * 60)
+    print("TESTE DE WEBHOOK DISCORD")
+    print("=" * 60)
     
-    def __init__(self):
-        self.rabbitmq = RabbitMQManager()
-        self.buffer = []
-        self.buffer_size = 20  # Analisa a cada 20 leituras
-    
-    def process_data(self, message: Dict):
-        """Processa dados de sensores"""
-        data = message.get('data', {})
-        timestamp = message.get('timestamp', '')
-        
-        self.buffer.append({
-            'timestamp': timestamp,
-            'temp': data.get('temp', 0),
-            'humid': data.get('humid', 0),
-            'soil': data.get('soil', 0),
-            'light': data.get('light', 0)
-        })
-        
-        print(f"[ANALYTICS] Buffer: {len(self.buffer)}/{self.buffer_size}")
-        
-        if len(self.buffer) >= self.buffer_size:
-            self.analyze_batch()
-            self.buffer = []
-    
-    def analyze_batch(self):
-        """Analisa lote de dados"""
-        if not self.buffer:
-            return
-        
-        print("\n" + "=" * 60)
-        print(f"ANÁLISE DE {len(self.buffer)} LEITURAS")
-        print("=" * 60)
-        
-        # Calcula estatísticas
-        temps = [d['temp'] for d in self.buffer]
-        humids = [d['humid'] for d in self.buffer]
-        soils = [d['soil'] for d in self.buffer]
-        lights = [d['light'] for d in self.buffer]
-        
-        stats = {
-            'temperatura': {
-                'média': sum(temps) / len(temps),
-                'mín': min(temps),
-                'máx': max(temps)
-            },
-            'umidade_ar': {
-                'média': sum(humids) / len(humids),
-                'mín': min(humids),
-                'máx': max(humids)
-            },
-            'umidade_solo': {
-                'média': sum(soils) / len(soils),
-                'mín': min(soils),
-                'máx': max(soils)
-            },
-            'luminosidade': {
-                'média': sum(lights) / len(lights),
-                'mín': min(lights),
-                'máx': max(lights)
-            }
+    try:
+        # Envia mensagem de teste
+        payload = {
+            "username": "Estufa Bot - TESTE",
+            "embeds": [{
+                "title": "🧪 Teste de Conexão",
+                "description": "Se você está vendo esta mensagem, o webhook está funcionando!",
+                "color": 3066993,  # Verde
+                "fields": [
+                    {
+                        "name": "Status",
+                        "value": "✅ Conectado",
+                        "inline": True
+                    }
+                ]
+            }]
         }
         
-        for sensor, values in stats.items():
-            print(f"\n{sensor.upper()}:")
-            print(f"  Média: {values['média']:.1f}")
-            print(f"  Mínima: {values['mín']:.1f}")
-            print(f"  Máxima: {values['máx']:.1f}")
+        response = requests.post(webhook_url, json=payload, timeout=10)
         
-        # Detecta padrões
-        self.detect_patterns(stats)
-        
-        print("\n" + "=" * 60 + "\n")
-    
-    def detect_patterns(self, stats):
-        """Detecta padrões nos dados"""
-        print("\nPADRÕES DETECTADOS:")
-        
-        # Temperatura instável
-        temp_range = stats['temperatura']['máx'] - stats['temperatura']['mín']
-        if temp_range > 5:
-            print(f"  ⚠️  Temperatura instável (variação de {temp_range:.1f}°C)")
-        
-        # Solo consistentemente baixo
-        if stats['umidade_solo']['média'] < 35:
-            print(f"  🚨 Umidade do solo consistentemente baixa ({stats['umidade_solo']['média']:.1f}%)")
-            print(f"     Recomendação: Verificar sistema de irrigação")
-        
-        # Boa condição
-        if (20 <= stats['temperatura']['média'] <= 30 and
-            stats['umidade_solo']['média'] > 40 and
-            stats['umidade_ar']['média'] > 50):
-            print(f"  ✓ Condições ideais detectadas!")
-    
-    def start(self):
-        """Inicia o worker"""
-        print("=" * 60)
-        print("DATA ANALYTICS WORKER")
-        print("=" * 60)
-        
-        if self.rabbitmq.connect():
-            print("✓ Conectado! Processando dados...\n")
-            
-            try:
-                self.rabbitmq.consume(
-                    self.rabbitmq.queues['data_analytics'],
-                    self.process_data
-                )
-            except KeyboardInterrupt:
-                print("\n\n[ANALYTICS WORKER] Encerrando...")
-                if self.buffer:
-                    print("Processando últimos dados do buffer...")
-                    self.analyze_batch()
-                self.rabbitmq.disconnect()
+        if response.status_code == 204:
+            print("✅ Webhook funcionando! Verifique seu canal Discord.")
+            return True
         else:
-            print("✗ Falha ao conectar")
+            print(f"❌ Erro: {response.status_code}")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Erro ao testar webhook: {e}")
+        return False
 
 # ==================== MAIN ====================
 
 def main():
     if len(sys.argv) < 2:
         print("""
-USO: python workers.py [worker_type]
+USO: python workers.py [comando] [webhook_url]
 
-Workers disponíveis:
-  email      - Envia emails para alertas críticos
-  sms        - Envia SMS para alertas críticos
-  discord    - Envia alertas para o Discord
-  analytics  - Processa dados de sensores em batch
-  all        - Inicia todos os workers (em threads separadas)
+Comandos:
+  start              - Inicia worker de Discord
+  test <webhook_url> - Testa webhook do Discord
 
 Exemplos:
-  python workers.py email
-  python workers.py analytics
+  python workers.py start
+  python workers.py test https://discord.com/api/webhooks/123/abc
+  
+Configurar Webhook:
+  1. Edite este arquivo (workers.py)
+  2. Linha ~20: webhook_url = "SEU_WEBHOOK_AQUI"
+  3. Salve e execute: python workers.py start
         """)
         return
     
-    worker_type = sys.argv[1].lower()
+    command = sys.argv[1].lower()
     
-    if worker_type == 'email':
-        worker = EmailNotificationWorker()
+    if command == 'start':
+        # Webhook pode ser passado como argumento ou configurado no código
+        webhook_url = sys.argv[2] if len(sys.argv) > 2 else None
+        worker = DiscordNotificationWorker(webhook_url=webhook_url)
         worker.start()
     
-    elif worker_type == 'sms':
-        worker = SMSNotificationWorker()
-        worker.start()
-
-    elif worker_type == 'discord':
-        worker = DiscordNotificationWorker()
-        worker.start()
-    
-    elif worker_type == 'analytics':
-        worker = DataAnalyticsWorker()
-        worker.start()
-    
-    elif worker_type == 'all':
-        import threading
+    elif command == 'test':
+        if len(sys.argv) < 3:
+            print("❌ Erro: Forneça o webhook URL")
+            print("Uso: python workers.py test <webhook_url>")
+            return
         
-        print("Iniciando todos os workers...\n")
-        
-        workers = [
-            EmailNotificationWorker(),
-            SMSNotificationWorker(),
-            DataAnalyticsWorker(),
-            DiscordNotificationWorker()
-        ]
-        
-        threads = []
-        for worker in workers:
-            thread = threading.Thread(target=worker.start, daemon=True)
-            thread.start()
-            threads.append(thread)
-            time.sleep(1)  # Delay entre inicializações
-        
-        try:
-            for thread in threads:
-                thread.join()
-        except KeyboardInterrupt:
-            print("\n\nEncerrando todos os workers...")
+        webhook_url = sys.argv[2]
+        test_discord_webhook(webhook_url)
     
     else:
-        print(f"Worker desconhecido: {worker_type}")
-        print("Use: email, sms, discord, analytics, ou all")
+        print(f"❌ Comando desconhecido: {command}")
+        print("Use: start ou test")
 
 if __name__ == '__main__':
     main()

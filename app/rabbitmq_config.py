@@ -30,12 +30,8 @@ class RabbitMQManager:
         
         # Apenas 1 exchange e 1 fila (simplificado)
         self.exchange_name = 'greenhouse.critical_alerts'
-        self.queues = {
-            'email_notifications': 'queue.email_alerts',
-            'sms_notifications': 'queue.sms_alerts',
-            'data_analytics': 'queue.sensor_data',
-            'discord_notifications': 'queue.discord_alerts'
-        }
+        self.queue_name = 'queue.critical_alerts'
+    
     def connect(self):
         """Conecta ao RabbitMQ"""
         try:
@@ -69,17 +65,6 @@ class RabbitMQManager:
                 queue=self.queue_name,
                 routing_key='alert.critical'
             )
-
-            self.channel.queue_declare(
-                queue=self.queues['discord_notifications'],
-                durable=True
-            )
-
-            self.channel.queue_bind(
-                exchange=self.exchange_name,
-                queue=self.queues['discord_notifications'],
-                routing_key='alert.critical' # Assumindo que escuta os mesmos alertas
-            )
             
             print(f"[RABBITMQ] Conectado em {self.host}:{self.port}")
             print(f"[RABBITMQ] Exchange: {self.exchange_name}")
@@ -98,6 +83,11 @@ class RabbitMQManager:
             alert_data: Dict com {type, message, severity, ...}
         """
         try:
+            # Verifica se está conectado
+            if not self.connection or self.connection.is_closed:
+                print(f"[RABBITMQ] Não conectado - pulando alerta: {alert_data.get('type')}")
+                return
+            
             message = {
                 'timestamp': datetime.now().isoformat(),
                 'type': alert_data.get('type', 'unknown'),

@@ -1,9 +1,104 @@
-"""
-GERENCIADOR DE 2 ARDUINOS - VERSÃO REFINADA
-- Arduino 1: Sensores (DHT11, Solo, LDR) + Atuadores (Bomba, Cooler, LED)
-- Arduino 2: Teclado 4x3 + LCD para configuração
-- RabbitMQ APENAS para alertas críticos de falha de conexão
-"""
+def _check_alerts(self, temp, humid, soil, light):
+        """Verifica condições de alerta"""
+        # Temperatura alta
+        if temp > self.thresholds['temp_max']:
+            insert_alert('high_temperature', f'Temp alta: {temp}°C', 'warning')
+        
+        # Temperatura baixa
+        if temp < self.thresholds['temp_min']:
+            insert_alert('low_temperature', f'Temp baixa: {temp}°C', 'warning')
+        
+        # Solo seco (crítico)
+        if soil < self.thresholds['soil_min']:
+            insert_alert('low_soil_moisture', f'Solo seco: {soil}%', 'critical')
+        
+        # Umidade baixa
+        if humid < self.thresholds['humid_min']:
+            insert_alert('low_humidity', f'Umidade baixa: {humid}%', 'warning')
+    
+def _process_actuator_action(self, data):
+        """
+        Processa ações automáticas dos atuadores e envia notificações
+        """
+        action = data.get('action', '')
+        reason = data.get('reason', '')
+        value = data.get('value', 0)
+        
+        print(f"[ATUADOR] {action} - {reason} (valor: {value})")
+        
+        # ========== BOMBA D'ÁGUA ==========
+        if action == 'pump_auto_on':
+            insert_action('pump_auto', 'activated', f'Bomba ligada - Solo: {value}%')
+            
+            if self.rabbitmq_connected and self.rabbitmq:
+                try:
+                    self.rabbitmq.publish_alert({
+                        'type': 'pump_activated',
+                        'message': f'💧 Bomba d\'água LIGADA automaticamente!\n\n🌱 Umidade do Solo: {value}%\n📊 Limite Mínimo: {self.thresholds["soil_min"]}%\n\n✅ Irrigação em andamento...',
+                        'severity': 'info'
+                    })
+                except:
+                    pass
+        
+        # ========== COOLER ==========
+        elif action == 'cooler_auto_on':
+            insert_action('cooler_auto', 'activated', f'Cooler ligado - Temp: {value}°C')
+            
+            if self.rabbitmq_connected and self.rabbitmq:
+                try:
+                    self.rabbitmq.publish_alert({
+                        'type': 'cooler_activated',
+                        'message': f'❄️ Cooler LIGADO automaticamente!\n\n🌡️ Temperatura: {value}°C\n📊 Limite Máximo: {self.thresholds["temp_max"]}°C\n\n✅ Sistema de resfriamento ativo.',
+                        'severity': 'info'
+                    })
+                except:
+                    pass
+        
+        elif action == 'cooler_auto_off':
+            insert_action('cooler_auto', 'deactivated', f'Cooler desligado - Temp: {value}°C')
+            
+            if self.rabbitmq_connected and self.rabbitmq:
+                try:
+                    self.rabbitmq.publish_alert({
+                        'type': 'cooler_deactivated',
+                        'message': f'✅ Cooler DESLIGADO automaticamente!\n\n🌡️ Temperatura: {value}°C\n📊 Temperatura normalizada (< {self.thresholds["temp_max"]}°C)\n\n😎 Ambiente resfriado com sucesso.',
+                        'severity': 'info'
+                    })
+                except:
+                    pass
+        
+        # ========== FITA LED ==========
+        elif action == 'light_auto_on':
+            insert_action('light_auto', 'activated', f'Fita LED ligada - Luz: {value}%')
+            
+            if self.rabbitmq_connected and self.rabbitmq:
+                try:
+                    self.rabbitmq.publish_alert({
+                        'type': 'light_activated',
+                        'message': f'💡 Fita LED LIGADA automaticamente!\n\n☀️ Luminosidade: {value}%\n📊 Limite Mínimo: {self.thresholds.get("luz_min", 20)}%\n\n✅ Iluminação suplementar ativa.',
+                        'severity': 'info'
+                    })
+                except:
+                    pass
+        
+        elif action == 'light_auto_off':
+            insert_action('light_auto', 'deactivated', f'Fita LED desligada - Luz: {value}%')
+            
+            if self.rabbitmq_connected and self.rabbitmq:
+                try:
+                    self.rabbitmq.publish_alert({
+                        'type': 'light_deactivated',
+                        'message': f'🌞 Fita LED DESLIGADA automaticamente!\n\n☀️ Luminosidade: {value}%\n📊 Luz natural suficiente\n\n✅ Economia de energia.',
+                        'severity': 'info'
+                    })
+                except:
+                    pass
+                """
+                GERENCIADOR DE 2 ARDUINOS - VERSÃO REFINADA
+                - Arduino 1: Sensores (DHT11, Solo, LDR) + Atuadores (Bomba, Cooler, LED)
+                - Arduino 2: Teclado 4x3 + LCD para configuração
+                - RabbitMQ APENAS para alertas críticos de falha de conexão
+                """
 
 import serial
 import serial.tools.list_ports
@@ -58,6 +153,21 @@ class DualArduinoManager:
         self.arduino1_fail_count = 0
         self.arduino2_fail_count = 0
         self.last_data_time = time.time()
+        self.last_arduino2_time = time.time()
+        
+        # Monitoramento de falhas de sensores (NOVO)
+        self.dht_fail_count = 0
+        self.last_dht_alert = 0  # Timestamp do último alerta DHT
+        self.sensor_fail_counts = {
+            'dht': 0,
+            'soil': 0,
+            'ldr': 0
+        }
+        self.last_sensor_alerts = {
+            'dht': 0,
+            'soil': 0,
+            'ldr': 0
+        }
         
         # RabbitMQ (apenas para alertas de falha)
         self.use_rabbitmq = use_rabbitmq and RABBITMQ_AVAILABLE
@@ -73,13 +183,15 @@ class DualArduinoManager:
             self.rabbitmq = RabbitMQManager()
             if self.rabbitmq.connect():
                 self.rabbitmq_connected = True
-                print("[MANAGER] RabbitMQ conectado (alertas de falha)")
+                print("[MANAGER] ✓ RabbitMQ conectado (alertas de falha)")
             else:
-                print("[MANAGER] RabbitMQ indisponível")
+                print("[MANAGER] ⚠️  RabbitMQ indisponível - continuando sem ele")
                 self.rabbitmq_connected = False
         except Exception as e:
-            print(f"[MANAGER] Erro RabbitMQ: {e}")
+            print(f"[MANAGER] ⚠️  RabbitMQ não disponível: {e}")
+            print("[MANAGER] Sistema funcionará normalmente (alertas apenas no SQLite)")
             self.rabbitmq_connected = False
+            self.rabbitmq = None
     
     def find_arduinos(self):
         """Encontra automaticamente as portas USB dos Arduinos"""
@@ -117,31 +229,69 @@ class DualArduinoManager:
         
         for port in ports:
             try:
-                ser = serial.Serial(port, 9600, timeout=2)
-                time.sleep(2)
+                print(f"[IDENTIFY] Testando {port}...")
+                ser = serial.Serial(port, 9600, timeout=3)
+                time.sleep(3)  # Aumentado para 3s (Arduino precisa resetar)
                 
-                # Lê mensagens iniciais
-                for _ in range(5):
+                # Limpa buffer primeiro
+                ser.reset_input_buffer()
+                time.sleep(1)
+                
+                # Lê mensagens por até 10 segundos
+                start_time = time.time()
+                identified = False
+                
+                while time.time() - start_time < 10 and not identified:
                     if ser.in_waiting > 0:
-                        line = ser.readline().decode('utf-8').strip()
-                        print(f"[IDENTIFY] {port}: {line}")
-                        
-                        if '"source":"arduino1"' in line or '"status":"arduino1_ready"' in line:
-                            port_sensors = port
-                            print(f"  ✓ {port} = Arduino Sensores")
-                            break
-                        
-                        elif '"source":"arduino2"' in line:
-                            port_keypad = port
-                            print(f"  ✓ {port} = Arduino Teclado")
-                            break
+                        try:
+                            line = ser.readline().decode('utf-8', errors='ignore').strip()
+                            
+                            if line:
+                                print(f"  {port}: {line[:80]}")  # Mostra primeiros 80 chars
+                                
+                                # Arduino 1 envia dados de sensores ou status
+                                if ('"source":"arduino1"' in line or 
+                                    '"status":"arduino1_ready"' in line or
+                                    ('"temp"' in line and '"humid"' in line)):
+                                    port_sensors = port
+                                    print(f"  ✓ {port} = Arduino 1 (Sensores)")
+                                    identified = True
+                                    break
+                                
+                                # Arduino 2 envia thresholds
+                                elif ('"source":"arduino2"' in line or
+                                      '"thresholds"' in line):
+                                    port_keypad = port
+                                    print(f"  ✓ {port} = Arduino 2 (Teclado)")
+                                    identified = True
+                                    break
+                        except:
+                            pass
                     
-                    time.sleep(0.5)
+                    time.sleep(0.3)
+                
+                if not identified:
+                    print(f"  ⚠️  {port}: Nenhuma identificação clara (timeout)")
                 
                 ser.close()
                 
             except Exception as e:
                 print(f"[IDENTIFY ERROR] {port}: {e}")
+        
+        # Se não identificou ambos, tenta uma abordagem alternativa
+        if not port_sensors or not port_keypad:
+            print("\n[IDENTIFY] Tentativa alternativa...")
+            
+            # Ordena portas e INVERTE
+            ports_sorted = sorted(ports, reverse=True)  # INVERTIDO
+            if len(ports_sorted) >= 2:
+                port_sensors = ports_sorted[0]
+                port_keypad = ports_sorted[1]
+                print(f"  {port_sensors} → Arduino 1 (Sensores)")
+                print(f"  {port_keypad} → Arduino 2 (Teclado)")
+        
+        # FORÇA INVERSÃO (descomente se necessário)
+        # port_sensors, port_keypad = port_keypad, port_sensors
         
         return port_sensors, port_keypad
     
@@ -174,12 +324,15 @@ class DualArduinoManager:
             print(f"[MANAGER ERROR] Falha na conexão: {e}")
             
             # Alerta via RabbitMQ
-            if self.rabbitmq_connected:
-                self.rabbitmq.publish_alert({
-                    'type': 'arduino_connection_error',
-                    'message': str(e),
-                    'severity': 'critical'
-                })
+            if self.rabbitmq_connected and self.rabbitmq:
+                try:
+                    self.rabbitmq.publish_alert({
+                        'type': 'arduino_connection_error',
+                        'message': str(e),
+                        'severity': 'critical'
+                    })
+                except:
+                    pass  # Ignora erro do RabbitMQ
             
             return False
     
@@ -196,7 +349,10 @@ class DualArduinoManager:
             print("[MANAGER] Arduino 2 desconectado")
         
         if self.rabbitmq_connected and self.rabbitmq:
-            self.rabbitmq.disconnect()
+            try:
+                self.rabbitmq.disconnect()
+            except:
+                pass  # Ignora erro ao desconectar
     
     def send_command_to_arduino1(self, command):
         """Envia comando para Arduino 1"""
@@ -265,6 +421,10 @@ class DualArduinoManager:
                                 if self.callback:
                                     self.callback(data)
                             
+                            # Ações automáticas dos atuadores (NOVO)
+                            elif 'action' in data:
+                                self._process_actuator_action(data)
+                            
                             # Resposta de comando
                             elif 'response' in data:
                                 print(f"[ARD1 ←] {data}")
@@ -272,25 +432,31 @@ class DualArduinoManager:
                         except json.JSONDecodeError:
                             print(f"[ARD1] {line}")
                 
-                # Detecta timeout (sem dados por 30s)
-                if time.time() - self.last_data_time > 30:
+                # Detecta timeout (sem dados por 60s = 1 minuto)
+                if time.time() - self.last_data_time > 60:  # ← ALTERADO PARA 60s
                     self.arduino1_fail_count += 1
                     
                     if self.arduino1_fail_count == 1:  # Alerta apenas na primeira vez
-                        print("[MANAGER] ⚠️ Arduino 1 sem resposta há 30s!")
+                        print("[MANAGER] 🚨 Arduino 1 sem resposta há 1 minuto!")
                         
-                        if self.rabbitmq_connected:
-                            self.rabbitmq.publish_alert({
-                                'type': 'arduino1_timeout',
-                                'message': 'Arduino 1 (sensores) não envia dados há 30s',
-                                'severity': 'critical'
-                            })
-                        
+                        # Salva no banco
                         insert_alert(
                             'arduino1_timeout',
-                            'Arduino 1 não envia dados',
+                            'Arduino 1 (sensores) não envia dados há 1 minuto',
                             'critical'
                         )
+                        
+                        # Publica no RabbitMQ → Discord
+                        if self.rabbitmq_connected and self.rabbitmq:
+                            try:
+                                self.rabbitmq.publish_alert({
+                                    'type': 'arduino1_timeout',
+                                    'message': '🔌 Arduino 1 (sensores) desconectado há 1 minuto! Verifique a conexão USB.',
+                                    'severity': 'critical'
+                                })
+                                print("[MANAGER] ✓ Alerta enviado para Discord")
+                            except:
+                                pass  # Ignora erro do RabbitMQ
                 
                 time.sleep(0.1)
                 
@@ -306,6 +472,9 @@ class DualArduinoManager:
                     line = self.arduino2.readline().decode('utf-8').strip()
                     
                     if line:
+                        self.last_arduino2_time = time.time()  # ← ATUALIZA TIMESTAMP
+                        self.arduino2_fail_count = 0  # ← RESETA CONTADOR
+                        
                         try:
                             data = json.loads(line)
                             
@@ -331,6 +500,32 @@ class DualArduinoManager:
                         except json.JSONDecodeError:
                             print(f"[ARD2] {line}")
                 
+                # ← NOVO: Detecta timeout do Arduino 2 (1 minuto sem dados)
+                if time.time() - self.last_arduino2_time > 60:
+                    self.arduino2_fail_count += 1
+                    
+                    if self.arduino2_fail_count == 1:  # Alerta apenas na primeira vez
+                        print("[MANAGER] 🚨 Arduino 2 sem resposta há 1 minuto!")
+                        
+                        # Salva no banco
+                        insert_alert(
+                            'arduino2_timeout',
+                            'Arduino 2 (teclado) não responde há 1 minuto',
+                            'warning'
+                        )
+                        
+                        # Publica no RabbitMQ → Discord
+                        if self.rabbitmq_connected and self.rabbitmq:
+                            try:
+                                self.rabbitmq.publish_alert({
+                                    'type': 'arduino2_timeout',
+                                    'message': '⌨️ Arduino 2 (teclado) desconectado há 1 minuto! Configurações podem não funcionar.',
+                                    'severity': 'warning'
+                                })
+                                print("[MANAGER] ✓ Alerta Arduino 2 enviado para Discord")
+                            except:
+                                pass
+                
                 time.sleep(0.1)
                 
             except Exception as e:
@@ -345,16 +540,125 @@ class DualArduinoManager:
             soil = data.get('soil', 0)
             light = data.get('light', 0)
             
+            # Valida dados dos sensores (NOVO)
+            self._validate_sensor_data(temp, humid, soil, light)
+            
             # Salva no banco
             insert_reading(temp, humid, soil, light)
             
-            # Verifica alertas
+            # Verifica alertas de thresholds
             self._check_alerts(temp, humid, soil, light)
             
             print(f"[SENSORES] T:{temp}°C H:{humid}% S:{soil}% L:{light}%")
             
         except Exception as e:
             print(f"[MANAGER ERROR] Erro ao processar: {e}")
+    
+    def _validate_sensor_data(self, temp, humid, soil, light):
+        """
+        Valida dados dos sensores e envia alertas se houver problema
+        Usa debounce para não enviar spam (1 alerta a cada 5 minutos por sensor)
+        """
+        current_time = time.time()
+        alert_cooldown = 300  # 5 minutos entre alertas do mesmo tipo
+        
+        # 1. Valida DHT11 (temperatura e umidade)
+        if temp == 0 or humid == 0 or temp < -40 or temp > 80 or humid > 100:
+            self.sensor_fail_counts['dht'] += 1
+            
+            # Envia alerta após 3 leituras ruins consecutivas
+            if (self.sensor_fail_counts['dht'] >= 3 and 
+                current_time - self.last_sensor_alerts['dht'] > alert_cooldown):
+                
+                print("[MANAGER] 🚨 DHT11 com falha!")
+                
+                insert_alert(
+                    'dht11_failure',
+                    f'Sensor DHT11 com falha! Temp={temp}°C, Umid={humid}%. Verifique conexões.',
+                    'critical'
+                )
+                
+                if self.rabbitmq_connected and self.rabbitmq:
+                    try:
+                        self.rabbitmq.publish_alert({
+                            'type': 'dht11_failure',
+                            'message': f'🌡️ Sensor DHT11 com FALHA!\n\nLeituras anormais detectadas:\n• Temperatura: {temp}°C\n• Umidade: {humid}%\n\n⚠️ Verifique:\n• Conexão do sensor no pino 2\n• Alimentação 5V\n• Sensor danificado',
+                            'severity': 'critical'
+                        })
+                        print("[MANAGER] ✓ Alerta DHT11 enviado para Discord")
+                    except:
+                        pass
+                
+                self.last_sensor_alerts['dht'] = current_time
+                self.sensor_fail_counts['dht'] = 0  # Reset contador
+        else:
+            # Reset contador se dados voltaram ao normal
+            if self.sensor_fail_counts['dht'] > 0:
+                self.sensor_fail_counts['dht'] -= 1
+        
+        # 2. Valida Sensor de Solo (0-100%)
+        if soil < 0 or soil > 100:
+            self.sensor_fail_counts['soil'] += 1
+            
+            if (self.sensor_fail_counts['soil'] >= 3 and 
+                current_time - self.last_sensor_alerts['soil'] > alert_cooldown):
+                
+                print("[MANAGER] 🚨 Sensor de Solo com falha!")
+                
+                insert_alert(
+                    'soil_sensor_failure',
+                    f'Sensor de solo com leitura inválida: {soil}%',
+                    'warning'
+                )
+                
+                if self.rabbitmq_connected and self.rabbitmq:
+                    try:
+                        self.rabbitmq.publish_alert({
+                            'type': 'soil_sensor_failure',
+                            'message': f'💧 Sensor de Umidade do Solo com problema!\n\nLeitura: {soil}% (fora do range 0-100%)\n\n⚠️ Verifique:\n• Conexão no pino A0\n• Calibração do sensor\n• Sensor em curto ou desconectado',
+                            'severity': 'warning'
+                        })
+                        print("[MANAGER] ✓ Alerta Solo enviado para Discord")
+                    except:
+                        pass
+                
+                self.last_sensor_alerts['soil'] = current_time
+                self.sensor_fail_counts['soil'] = 0
+        else:
+            if self.sensor_fail_counts['soil'] > 0:
+                self.sensor_fail_counts['soil'] -= 1
+        
+        # 3. Valida LDR (0-100%)
+        if light < 0 or light > 100:
+            self.sensor_fail_counts['ldr'] += 1
+            
+            if (self.sensor_fail_counts['ldr'] >= 3 and 
+                current_time - self.last_sensor_alerts['ldr'] > alert_cooldown):
+                
+                print("[MANAGER] 🚨 Sensor LDR com falha!")
+                
+                insert_alert(
+                    'ldr_sensor_failure',
+                    f'Sensor LDR com leitura inválida: {light}%',
+                    'warning'
+                )
+                
+                if self.rabbitmq_connected and self.rabbitmq:
+                    try:
+                        self.rabbitmq.publish_alert({
+                            'type': 'ldr_sensor_failure',
+                            'message': f'☀️ Sensor de Luminosidade (LDR) com problema!\n\nLeitura: {light}% (fora do range 0-100%)\n\n⚠️ Verifique:\n• Conexão no pino A1\n• Resistor pull-down (10kΩ)\n• LDR danificado',
+                            'severity': 'warning'
+                        })
+                        print("[MANAGER] ✓ Alerta LDR enviado para Discord")
+                    except:
+                        pass
+                
+                self.last_sensor_alerts['ldr'] = current_time
+                self.sensor_fail_counts['ldr'] = 0
+        else:
+            if self.sensor_fail_counts['ldr'] > 0:
+                self.sensor_fail_counts['ldr'] -= 1
     
     def _check_alerts(self, temp, humid, soil, light):
         """Verifica condições de alerta"""

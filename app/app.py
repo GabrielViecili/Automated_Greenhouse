@@ -4,6 +4,9 @@ SISTEMA DE ESTUFA INTELIGENTE - SERVIDOR PRINCIPAL
 - WebSocket para dashboard em tempo real
 - RabbitMQ APENAS para alertas críticos de falha
 - Banco de dados persistente
+
+WORKERS DISCORD:
+  Execute em terminal separado: python workers.py start
 """
 
 from flask import Flask, render_template, jsonify, request
@@ -27,7 +30,8 @@ from database import (
 )
 from dual_arduino_manager import DualArduinoManager
 
-from workers import EmailNotificationWorker, SMSNotificationWorker, DataAnalyticsWorker, DiscordNotificationWorker
+# Workers Discord são executados separadamente
+# NÃO são importados aqui
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'greenhouse_secret_2025'
@@ -37,41 +41,6 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 # Gerenciador global dos Arduinos
 arduino_manager = None
 arduino_connected = False
-
-def start_background_workers():
-    """
-    Inicia todos os workers do RabbitMQ em threads separadas.
-    """
-    print("[SISTEMA] Iniciando workers de notificação em background...")
-    
-    # Lista de TODAS as classes de worker que você quer rodando
-    worker_classes = [
-        EmailNotificationWorker, 
-        SMSNotificationWorker, 
-        DataAnalyticsWorker,
-        DiscordNotificationWorker  # O novo worker do Discord!
-    ]
-    
-    threads = []
-    
-    for worker_class in worker_classes:
-        try:
-            # Cria uma instância do worker
-            worker_instance = worker_class() 
-            
-            # Cria a thread para rodar o método .start() dele
-            # daemon=True garante que a thread morra quando o app.py principal morrer
-            t = threading.Thread(target=worker_instance.start, daemon=True)
-            t.start()
-            threads.append(t)
-            
-            print(f"  ✓ Worker {worker_class.__name__} iniciado em background.")
-            time.sleep(1) # Pequeno delay para não sobrecarregar o RabbitMQ
-            
-        except Exception as e:
-            print(f"  ✗ FALHA ao iniciar {worker_class.__name__}: {e}")
-    
-    print("[SISTEMA] Todos os workers em background estão ativos e ouvindo.")
 
 def on_arduino_data(data):
     """Callback quando dados chegam do Arduino 1 (sensores)"""
@@ -319,27 +288,23 @@ if __name__ == '__main__':
     print(" SISTEMA DE ESTUFA INTELIGENTE - SERVIDOR PRINCIPAL")
     print("=" * 70)
     
-    # 1. Banco
-    print("\n[1/4] Inicializando banco de dados...") # <--- Mudei para 1/4
+    # 1. Banco de dados
+    print("\n[1/3] Inicializando banco de dados...")
     init_database()
+    print("      ✓ Banco pronto!")
     
     # 2. Arduinos
-    print("\n[2/4] Conectando aos 2 Arduinos...") # <--- Mudei para 2/4
+    print("\n[2/3] Conectando aos 2 Arduinos...")
     print("      - Arduino 1: Sensores/Atuadores (DHT11, Solo, LDR, Relés)")
     print("      - Arduino 2: Teclado/Configuração (LCD + Teclado 4x3)")
+    
     init_arduinos()
     
     # 3. Background
-    print("\n[3/4] Iniciando monitoramento em background...") # <--- Mudei para 3/4
+    print("\n[3/3] Iniciando monitoramento em background...")
     bg_thread = threading.Thread(target=background_tasks, daemon=True)
     bg_thread.start()
     print("      ✓ Background ativo!")
-    
-    # ==================== ADICIONE AQUI ====================
-    # 4. Workers
-    print("\n[4/4] Iniciando workers de notificação...") # <--- Bloco novo
-    start_background_workers()
-    # =======================================================
     
     # Status final
     print("\n" + "=" * 70)
@@ -360,9 +325,6 @@ if __name__ == '__main__':
     print("\n" + "=" * 70)
     print(" Pressione Ctrl+C para encerrar")
     print("=" * 70 + "\n")
-    
-    # Inicia o servidor Flask/SocketIO
-    socketio.run(app, host='0.0.0.0', port=5000)
     
     try:
         socketio.run(
