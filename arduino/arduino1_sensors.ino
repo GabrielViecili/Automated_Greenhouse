@@ -1,38 +1,45 @@
 /*
- * ARDUINO 1 - SENSORES/ATUADORES
- * 
- * Conectado à Raspberry Pi via USB Serial
+ * ARDUINO 1 - SENSORES/ATUADORES (VERSÃO REFINADA)
  * 
  * Hardware:
  * - DHT11 no pino 2
  * - Sensor de solo em A0
  * - LDR em A1
- * - LCD I2C 0x27
- * - LEDs (verde=8, vermelho=9)
+ * - LCD I2C 0x27 (16x2)
+ * - LED Verde no pino 8
+ * - LED Vermelho no pino 9
  * - Buzzer no pino 10
- * - Relé no pino 11
+ * - Relé BOMBA no pino 11
+ * - Relé COOLER no pino 12
+ * - Relé FITA LED no pino 13
  * 
- * Protocolo Serial:
- * ENVIA: JSON com dados dos sensores
- * RECEBE: Comandos da Raspberry Pi
+ * Comandos aceitos via Serial:
+ * - IRRIGATE: Ativa bomba por 5s
+ * - AUTO_ON/AUTO_OFF: Irrigação automática
+ * - COOLER_ON/COOLER_OFF: Liga/desliga cooler
+ * - LIGHT_ON/LIGHT_OFF: Liga/desliga fita LED
+ * - GET_THRESHOLDS: Retorna thresholds atuais
+ * - JSON de thresholds: Atualiza limites
  */
 
 #include <DHT.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 
-// === PINOS DOS SENSORES ===
+// === PINOS SENSORES ===
 #define DHT_PIN 2
-#define SOIL_MOISTURE_PIN A0
+#define SOIL_PIN A0
 #define LDR_PIN A1
 
-// === PINOS DOS ATUADORES ===
+// === PINOS ATUADORES ===
 #define LED_GREEN 8
 #define LED_RED 9
 #define BUZZER 10
-#define RELAY_PIN 11
+#define RELAY_PUMP 11      // Bomba d'água
+#define RELAY_COOLER 12    // Cooler/Ventilador
+#define RELAY_LIGHT 13     // Fita LED
 
-// === SENSOR DHT ===
+// === DHT ===
 #define DHTTYPE DHT11
 DHT dht(DHT_PIN, DHTTYPE);
 
@@ -40,11 +47,11 @@ DHT dht(DHT_PIN, DHTTYPE);
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 // === INTERVALOS ===
-#define INTERVAL_SENSORS 5000  // Lê sensores a cada 5 segundos
+#define INTERVAL_SENSORS 5000  // Lê sensores a cada 5s
 
 unsigned long lastSensorRead = 0;
 
-// === THRESHOLDS (recebidos da Raspberry Pi) ===
+// === THRESHOLDS (atualizáveis) ===
 struct Thresholds {
   float tempMax = 35.0;
   float tempMin = 15.0;
@@ -58,6 +65,9 @@ struct Thresholds {
 
 // === ESTADO ===
 bool autoIrrigation = false;
+bool coolerOn = false;
+bool lightOn = false;
+
 float lastTemp = 0;
 float lastHumid = 0;
 int lastSoil = 0;
@@ -74,13 +84,18 @@ void setup() {
   pinMode(LED_GREEN, OUTPUT);
   pinMode(LED_RED, OUTPUT);
   pinMode(BUZZER, OUTPUT);
-  pinMode(RELAY_PIN, OUTPUT);
+  pinMode(RELAY_PUMP, OUTPUT);
+  pinMode(RELAY_COOLER, OUTPUT);
+  pinMode(RELAY_LIGHT, OUTPUT);
   
+  // Estado inicial (tudo desligado)
   digitalWrite(LED_GREEN, LOW);
   digitalWrite(LED_RED, LOW);
-  digitalWrite(RELAY_PIN, LOW);
+  digitalWrite(RELAY_PUMP, LOW);
+  digitalWrite(RELAY_COOLER, LOW);
+  digitalWrite(RELAY_LIGHT, LOW);
   
-  // Inicia sensores
+  // Inicia DHT
   dht.begin();
   
   // Inicia LCD
@@ -93,7 +108,7 @@ void setup() {
   lcd.clear();
   
   // Envia mensagem de boot
-  Serial.println("{\"status\":\"arduino1_ready\"}");
+  Serial.println("{\"status\":\"arduino1_ready\",\"source\":\"arduino1\"}");
 }
 
 // ========================================
@@ -125,10 +140,10 @@ void readAndSendSensorData() {
   // Lê sensores
   float temp = dht.readTemperature();
   float humid = dht.readHumidity();
-  int soilRaw = analogRead(SOIL_MOISTURE_PIN);
+  int soilRaw = analogRead(SOIL_PIN);
   int ldrRaw = analogRead(LDR_PIN);
   
-  // Validação do DHT
+  // Validação DHT
   if (isnan(temp) || isnan(humid)) {
     temp = lastTemp;
     humid = lastHumid;
@@ -139,7 +154,7 @@ void readAndSendSensorData() {
   lastTemp = temp;
   lastHumid = humid;
   
-  // Calibração
+  // Calibração (ajuste conforme seu hardware)
   int soilPercent = map(soilRaw, 1023, 400, 0, 100);
   soilPercent = constrain(soilPercent, 0, 100);
   int ldrPercent = map(ldrRaw, 900, 100, 0, 100);
@@ -158,11 +173,25 @@ void readAndSendSensorData() {
   Serial.println(json);
   
   // Checa condições
-  checkConditions(temp, humid, soilPercent);
+  checkConditions(temp, humid, soilPercent, ldrPercent);
   
   // Irrigação automática
   if (autoIrrigation && soilPercent < thresholds.terraMin) {
-    activateIrrigation(3000);
+    activatePump(3000);
+  }
+  
+  // Cooler automático (temperatura alta)
+  if (temp > thresholds.tempMax && !coolerOn) {
+    setCooler(true);
+  } else if (temp < thresholds.tempMax - 2 && coolerOn) {
+    setCooler(false);
+  }
+  
+  // Luz automática (baixa luminosidade)
+  if (ldrPercent < thresholds.luzMin && !lightOn) {
+    setLight(true);
+  } else if (ldrPercent > thresholds.luzMin + 10 && lightOn) {
+    setLight(false);
   }
   
   // Atualiza LCD
@@ -173,7 +202,7 @@ void readAndSendSensorData() {
 // VERIFICA CONDIÇÕES
 // ========================================
 
-void checkConditions(float temp, float humid, int soil) {
+void checkConditions(float temp, float humid, int soil, int light) {
   bool alert = false;
   
   if (temp > thresholds.tempMax || temp < thresholds.tempMin) { alert = true; }
@@ -191,14 +220,28 @@ void checkConditions(float temp, float humid, int soil) {
 }
 
 // ========================================
-// IRRIGAÇÃO
+// CONTROLE DE ATUADORES
 // ========================================
 
-void activateIrrigation(int duration) {
-  digitalWrite(RELAY_PIN, HIGH);
+void activatePump(int duration) {
+  digitalWrite(RELAY_PUMP, HIGH);
   updateLCD(lastTemp, lastHumid, lastSoil, lastLight, false);
   delay(duration);
-  digitalWrite(RELAY_PIN, LOW);
+  digitalWrite(RELAY_PUMP, LOW);
+  updateLCD(lastTemp, lastHumid, lastSoil, lastLight, false);
+}
+
+void setCooler(bool state) {
+  coolerOn = state;
+  digitalWrite(RELAY_COOLER, state ? HIGH : LOW);
+  Serial.println(state ? "{\"response\":\"cooler_on\"}" : "{\"response\":\"cooler_off\"}");
+  updateLCD(lastTemp, lastHumid, lastSoil, lastLight, false);
+}
+
+void setLight(bool state) {
+  lightOn = state;
+  digitalWrite(RELAY_LIGHT, state ? HIGH : LOW);
+  Serial.println(state ? "{\"response\":\"light_on\"}" : "{\"response\":\"light_off\"}");
   updateLCD(lastTemp, lastHumid, lastSoil, lastLight, false);
 }
 
@@ -207,9 +250,9 @@ void activateIrrigation(int duration) {
 // ========================================
 
 void handleCommand(String cmd) {
-  // Comandos simples
+  // Irrigação
   if (cmd == "IRRIGATE") {
-    activateIrrigation(5000);
+    activatePump(5000);
     Serial.println("{\"response\":\"irrigation_started\"}");
   }
   else if (cmd == "AUTO_ON") {
@@ -220,10 +263,27 @@ void handleCommand(String cmd) {
     autoIrrigation = false;
     Serial.println("{\"response\":\"auto_irrigation_disabled\"}");
   }
+  
+  // Cooler
+  else if (cmd == "COOLER_ON") {
+    setCooler(true);
+  }
+  else if (cmd == "COOLER_OFF") {
+    setCooler(false);
+  }
+  
+  // Fita LED
+  else if (cmd == "LIGHT_ON") {
+    setLight(true);
+  }
+  else if (cmd == "LIGHT_OFF") {
+    setLight(false);
+  }
+  
+  // Thresholds
   else if (cmd == "GET_THRESHOLDS") {
     sendThresholds();
   }
-  // Comando JSON para atualizar thresholds
   else if (cmd.startsWith("{")) {
     parseThresholdsJSON(cmd);
   }
@@ -232,7 +292,7 @@ void handleCommand(String cmd) {
 }
 
 // ========================================
-// ENVIA THRESHOLDS ATUAIS
+// ENVIA THRESHOLDS
 // ========================================
 
 void sendThresholds() {
@@ -254,8 +314,7 @@ void sendThresholds() {
 // ========================================
 
 void parseThresholdsJSON(String json) {
-  // Exemplo: {"tempMax":30,"tempMin":18}
-  
+  // Parsing simples (você pode usar ArduinoJson para parsing robusto)
   if (json.indexOf("\"tempMax\"") > 0) {
     int pos = json.indexOf("\"tempMax\":") + 10;
     thresholds.tempMax = json.substring(pos, json.indexOf(",", pos)).toFloat();
@@ -277,7 +336,6 @@ void parseThresholdsJSON(String json) {
     thresholds.terraMin = json.substring(pos, json.indexOf(",", pos)).toFloat();
   }
   
-  // Feedback
   lcd.clear();
   lcd.print("Thresholds OK!");
   delay(1000);
@@ -305,20 +363,29 @@ void updateLCD(float temp, float humid, int soil, int light, bool dhtError) {
   lcd.print(humid, 0);
   lcd.print("%");
   
-  // Linha 2: Solo e Luz
+  // Linha 2: Solo e status
   lcd.setCursor(0, 1);
   lcd.print("S:");
   lcd.print(soil);
-  lcd.print("% L:");
-  lcd.print(light);
   lcd.print("%");
   
-  // Status irrigação
-  if (digitalRead(RELAY_PIN) == HIGH) {
-    lcd.setCursor(11, 1);
-    lcd.print("IRRIG");
+  // Status dos atuadores
+  if (digitalRead(RELAY_PUMP) == HIGH) {
+    lcd.setCursor(7, 1);
+    lcd.print("BOMB");
+  } else if (coolerOn) {
+    lcd.setCursor(7, 1);
+    lcd.print("COOL");
+  } else if (lightOn) {
+    lcd.setCursor(7, 1);
+    lcd.print("LED");
   } else if (autoIrrigation) {
-    lcd.setCursor(11, 1);
+    lcd.setCursor(7, 1);
     lcd.print("AUTO");
   }
+  
+  // Luminosidade
+  lcd.setCursor(12, 1);
+  lcd.print("L:");
+  lcd.print(light);
 }

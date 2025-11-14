@@ -1,63 +1,106 @@
+"""
+SISTEMA DE ESTUFA INTELIGENTE - SERVIDOR PRINCIPAL
+- Gerencia 2 Arduinos via USB
+- WebSocket para dashboard em tempo real
+- RabbitMQ APENAS para alertas críticos de falha
+- Banco de dados persistente
+"""
+
 from flask import Flask, render_template, jsonify, request
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
-from serial_reader import ArduinoReader
 import json
 from datetime import datetime
 import threading
 import time
 import os
 
+# Importações locais
 from database import (
     init_database, 
-    insert_reading, 
+    insert_reading,
     insert_action,
     get_latest_readings, 
     get_readings_by_timerange,
     get_latest_alerts,
     get_statistics
 )
-from serial_reader import ArduinoReader
+from dual_arduino_manager import DualArduinoManager
 
-try:
-    from serial_reader_rabbitmq import ArduinoReaderWithRabbitMQ as ArduinoReader
-    print("[APP] Usando versão com RabbitMQ")
-except ImportError:
-    from serial_reader import ArduinoReader
-    print("[APP] Usando versão original (sem RabbitMQ)")
+from workers import EmailNotificationWorker, SMSNotificationWorker, DataAnalyticsWorker, DiscordNotificationWorker
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'greenhouse_secret_2025'
 CORS(app)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
-# Instância global do leitor Arduino
-arduino = None
+# Gerenciador global dos Arduinos
+arduino_manager = None
 arduino_connected = False
 
-def on_arduino_data(data):
-    """Callback chamado quando dados chegam do Arduino"""
-    # Emite dados em tempo real via WebSocket para todos os clientes conectados
-    socketio.emit('sensor_data', data, broadcast=True)
-    print(f"[WEBSOCKET] Dados emitidos: {data}")
+def start_background_workers():
+    """
+    Inicia todos os workers do RabbitMQ em threads separadas.
+    """
+    print("[SISTEMA] Iniciando workers de notificação em background...")
+    
+    # Lista de TODAS as classes de worker que você quer rodando
+    worker_classes = [
+        EmailNotificationWorker, 
+        SMSNotificationWorker, 
+        DataAnalyticsWorker,
+        DiscordNotificationWorker  # O novo worker do Discord!
+    ]
+    
+    threads = []
+    
+    for worker_class in worker_classes:
+        try:
+            # Cria uma instância do worker
+            worker_instance = worker_class() 
+            
+            # Cria a thread para rodar o método .start() dele
+            # daemon=True garante que a thread morra quando o app.py principal morrer
+            t = threading.Thread(target=worker_instance.start, daemon=True)
+            t.start()
+            threads.append(t)
+            
+            print(f"  ✓ Worker {worker_class.__name__} iniciado em background.")
+            time.sleep(1) # Pequeno delay para não sobrecarregar o RabbitMQ
+            
+        except Exception as e:
+            print(f"  ✗ FALHA ao iniciar {worker_class.__name__}: {e}")
+    
+    print("[SISTEMA] Todos os workers em background estão ativos e ouvindo.")
 
-def init_arduino():
-    """Inicializa conexão com Arduino"""
-    global arduino, arduino_connected
+def on_arduino_data(data):
+    """Callback quando dados chegam do Arduino 1 (sensores)"""
+    # Emite dados em tempo real via WebSocket para todos clientes
+    socketio.emit('sensor_data', data, broadcast=True)
+    print(f"[WS] Dados emitidos: T:{data.get('temp')}°C H:{data.get('humid')}% S:{data.get('soil')}%")
+
+def init_arduinos():
+    """Inicializa conexão com os 2 Arduinos"""
+    global arduino_manager, arduino_connected
     
     try:
-        arduino = ArduinoReader(callback=on_arduino_data)
-        if arduino.connect():
-            arduino.start()
+        # use_rabbitmq=True apenas para alertas críticos de falha
+        arduino_manager = DualArduinoManager(
+            callback=on_arduino_data,
+            use_rabbitmq=True  
+        )
+        
+        if arduino_manager.connect():
+            arduino_manager.start()
             arduino_connected = True
-            print("[APP] Arduino conectado e iniciado!")
+            print("[APP] ✓ 2 Arduinos conectados!")
             return True
         else:
-            print("[APP] Falha ao conectar com Arduino")
+            print("[APP] ✗ Falha ao conectar Arduinos")
             arduino_connected = False
             return False
     except Exception as e:
-        print(f"[APP ERROR] Erro ao inicializar Arduino: {e}")
+        print(f"[APP ERROR] Erro ao inicializar: {e}")
         arduino_connected = False
         return False
 
@@ -66,181 +109,271 @@ def init_arduino():
 @app.route('/')
 def index():
     """Página principal do dashboard"""
-    return render_template('dashboard.html')
+    return render_template('index.html')
 
 @app.route('/api/status')
 def api_status():
-    """Retorna status do sistema"""
+    """Status do sistema"""
     return jsonify({
         'status': 'online',
         'arduino_connected': arduino_connected,
+        'arduino1': 'connected' if arduino_manager and arduino_manager.arduino1 else 'disconnected',
+        'arduino2': 'connected' if arduino_manager and arduino_manager.arduino2 else 'disconnected',
         'timestamp': datetime.now().isoformat()
     })
 
 @app.route('/api/readings/latest')
 def api_latest_readings():
-    """Retorna as últimas leituras"""
+    """Últimas leituras do banco"""
     limit = request.args.get('limit', 10, type=int)
     readings = get_latest_readings(limit)
     return jsonify(readings)
 
 @app.route('/api/readings/history')
 def api_readings_history():
-    """Retorna histórico de leituras"""
+    """Histórico de leituras"""
     hours = request.args.get('hours', 24, type=int)
     readings = get_readings_by_timerange(hours)
     return jsonify(readings)
 
 @app.route('/api/alerts/latest')
 def api_latest_alerts():
-    """Retorna os últimos alertas"""
+    """Últimos alertas"""
     limit = request.args.get('limit', 10, type=int)
     alerts = get_latest_alerts(limit)
     return jsonify(alerts)
 
 @app.route('/api/statistics')
 def api_statistics():
-    """Retorna estatísticas do sistema"""
+    """Estatísticas gerais"""
     stats = get_statistics()
     return jsonify(stats)
 
+@app.route('/api/thresholds', methods=['GET'])
+def api_get_thresholds():
+    """Retorna thresholds atuais"""
+    if not arduino_connected:
+        return jsonify({'error': 'Arduinos não conectados'}), 503
+    
+    return jsonify({
+        'thresholds': arduino_manager.current_thresholds,
+        'active': arduino_manager.thresholds
+    })
+
+@app.route('/api/thresholds', methods=['POST'])
+def api_set_thresholds():
+    """Define thresholds (Arduino 2 tem prioridade)"""
+    if not arduino_connected:
+        return jsonify({'error': 'Arduinos não conectados'}), 503
+    
+    data = request.get_json()
+    success = arduino_manager.send_thresholds_to_arduino1(data)
+    
+    if success:
+        return jsonify({
+            'success': True, 
+            'message': 'Thresholds atualizados',
+            'note': 'Arduino 2 pode sobrescrever via teclado'
+        })
+    else:
+        return jsonify({'error': 'Falha ao enviar'}), 500
+
 @app.route('/api/command/irrigate', methods=['POST'])
 def api_irrigate():
-    """Comando para ativar irrigação"""
+    """Ativa irrigação manual"""
     if not arduino_connected:
-        return jsonify({'error': 'Arduino não conectado'}), 503
+        return jsonify({'error': 'Arduinos não conectados'}), 503
     
-    success = arduino.send_command('IRRIGATE')
+    success = arduino_manager.send_command_to_arduino1('IRRIGATE')
+    
     if success:
-        insert_action('irrigation', 'completed', 'Irrigação manual ativada via API')
+        insert_action('irrigation', 'completed', 'Irrigação manual via API')
         return jsonify({'success': True, 'message': 'Irrigação ativada'})
     else:
-        return jsonify({'error': 'Falha ao enviar comando'}), 500
+        return jsonify({'error': 'Falha ao enviar'}), 500
+
+@app.route('/api/command/cooler', methods=['POST'])
+def api_cooler():
+    """Liga/desliga cooler"""
+    if not arduino_connected:
+        return jsonify({'error': 'Arduinos não conectados'}), 503
+    
+    data = request.get_json()
+    state = data.get('state', 'ON')  # ON ou OFF
+    
+    command = f'COOLER_{state}'
+    success = arduino_manager.send_command_to_arduino1(command)
+    
+    if success:
+        insert_action('cooler', 'completed', f'Cooler {state}')
+        return jsonify({'success': True, 'message': f'Cooler {state}'})
+    else:
+        return jsonify({'error': 'Falha ao enviar'}), 500
+
+@app.route('/api/command/light', methods=['POST'])
+def api_light():
+    """Liga/desliga fita LED"""
+    if not arduino_connected:
+        return jsonify({'error': 'Arduinos não conectados'}), 503
+    
+    data = request.get_json()
+    state = data.get('state', 'ON')  # ON ou OFF
+    
+    command = f'LIGHT_{state}'
+    success = arduino_manager.send_command_to_arduino1(command)
+    
+    if success:
+        insert_action('light', 'completed', f'Fita LED {state}')
+        return jsonify({'success': True, 'message': f'Fita LED {state}'})
+    else:
+        return jsonify({'error': 'Falha ao enviar'}), 500
 
 @app.route('/api/command/auto_irrigation', methods=['POST'])
 def api_auto_irrigation():
-    """Ativa/desativa irrigação automática"""
+    """Liga/desliga irrigação automática"""
     if not arduino_connected:
-        return jsonify({'error': 'Arduino não conectado'}), 503
+        return jsonify({'error': 'Arduinos não conectados'}), 503
     
     data = request.get_json()
     enable = data.get('enable', True)
     
     command = 'AUTO_ON' if enable else 'AUTO_OFF'
-    success = arduino.send_command(command)
+    success = arduino_manager.send_command_to_arduino1(command)
     
     if success:
         status = 'habilitada' if enable else 'desabilitada'
         insert_action('auto_irrigation_toggle', 'completed', f'Irrigação automática {status}')
         return jsonify({'success': True, 'message': f'Irrigação automática {status}'})
     else:
-        return jsonify({'error': 'Falha ao enviar comando'}), 500
+        return jsonify({'error': 'Falha ao enviar'}), 500
 
-@app.route('/api/command/custom', methods=['POST'])
-def api_custom_command():
-    """Envia comando customizado para Arduino"""
-    if not arduino_connected:
-        return jsonify({'error': 'Arduino não conectado'}), 503
-    
-    data = request.get_json()
-    command = data.get('command', '')
-    
-    if not command:
-        return jsonify({'error': 'Comando vazio'}), 400
-    
-    success = arduino.send_command(command)
-    if success:
-        return jsonify({'success': True, 'message': 'Comando enviado'})
-    else:
-        return jsonify({'error': 'Falha ao enviar comando'}), 500
-
-# ==================== WEBSOCKET EVENTS ====================
+# ==================== WEBSOCKET ====================
 
 @socketio.on('connect')
 def handle_connect():
-    """Cliente WebSocket conectou"""
-    print(f"[WEBSOCKET] Cliente conectado: {request.sid}")
+    """Cliente conectou"""
+    print(f"[WS] Cliente conectado: {request.sid}")
     
-    # Envia último dado disponível para o novo cliente
-    if arduino and arduino.last_data:
-        emit('sensor_data', arduino.last_data)
+    # Envia dados atuais imediatamente
+    if arduino_manager and arduino_manager.last_sensor_data:
+        emit('sensor_data', arduino_manager.last_sensor_data)
     
     emit('connection_status', {
         'connected': True,
-        'arduino_status': arduino_connected
+        'arduino1_status': 'connected' if arduino_manager and arduino_manager.arduino1 else 'disconnected',
+        'arduino2_status': 'connected' if arduino_manager and arduino_manager.arduino2 else 'disconnected'
     })
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    """Cliente WebSocket desconectou"""
-    print(f"[WEBSOCKET] Cliente desconectado: {request.sid}")
+    """Cliente desconectou"""
+    print(f"[WS] Cliente desconectado: {request.sid}")
 
 @socketio.on('request_data')
 def handle_request_data():
     """Cliente solicita dados atuais"""
-    if arduino and arduino.last_data:
-        emit('sensor_data', arduino.last_data)
+    if arduino_manager and arduino_manager.last_sensor_data:
+        emit('sensor_data', arduino_manager.last_sensor_data)
     else:
-        emit('sensor_data', {'error': 'Nenhum dado disponível'})
+        emit('sensor_data', {'error': 'Sem dados'})
 
 @socketio.on('send_command')
 def handle_send_command(data):
-    """Recebe comando via WebSocket"""
+    """Comando via WebSocket"""
     command = data.get('command', '')
-    print(f"[WEBSOCKET] Comando recebido: {command}")
+    print(f"[WS] Comando: {command}")
     
     if not arduino_connected:
-        emit('command_response', {'error': 'Arduino não conectado'})
+        emit('command_response', {'error': 'Arduinos não conectados'})
         return
     
-    if arduino.send_command(command):
+    if arduino_manager.send_command_to_arduino1(command):
         emit('command_response', {'success': True, 'command': command})
     else:
-        emit('command_response', {'error': 'Falha ao enviar comando'})
+        emit('command_response', {'error': 'Falha ao enviar'})
 
-# ==================== FUNÇÕES DE INICIALIZAÇÃO ====================
+# ==================== BACKGROUND ====================
 
 def background_tasks():
-    """Tasks em background (simulação quando Arduino não está disponível)"""
+    """Tasks em background - monitora conexão"""
+    reconnect_attempts = 0
+    
     while True:
-        time.sleep(10)
+        time.sleep(30)  # Verifica a cada 30s
         
-        # Se não tiver Arduino conectado, tenta reconectar
-        if not arduino_connected:
-            print("[APP] Tentando reconectar Arduino...")
-            init_arduino()
+        global arduino_connected
+        
+        if not arduino_connected and reconnect_attempts < 10:
+            print(f"[BG] Tentativa de reconexão {reconnect_attempts + 1}/10...")
+            if init_arduinos():
+                reconnect_attempts = 0
+                print("[BG] ✓ Reconectado!")
+            else:
+                reconnect_attempts += 1
+                print(f"[BG] ✗ Falha. Próxima tentativa em 30s...")
 
 # ==================== MAIN ====================
 
 if __name__ == '__main__':
-    print("=" * 50)
-    print("SISTEMA DE MONITORAMENTO DE ESTUFA INTELIGENTE")
-    print("=" * 50)
+    print("=" * 70)
+    print(" SISTEMA DE ESTUFA INTELIGENTE - SERVIDOR PRINCIPAL")
+    print("=" * 70)
     
-    # Inicializa banco de dados
-    print("\n[1/3] Inicializando banco de dados...")
+    # 1. Banco
+    print("\n[1/4] Inicializando banco de dados...") # <--- Mudei para 1/4
     init_database()
     
-    # Inicializa Arduino
-    print("[2/3] Conectando ao Arduino...")
-    init_arduino()
+    # 2. Arduinos
+    print("\n[2/4] Conectando aos 2 Arduinos...") # <--- Mudei para 2/4
+    print("      - Arduino 1: Sensores/Atuadores (DHT11, Solo, LDR, Relés)")
+    print("      - Arduino 2: Teclado/Configuração (LCD + Teclado 4x3)")
+    init_arduinos()
     
-    # Inicia tasks em background
-    print("[3/3] Iniciando tasks em background...")
+    # 3. Background
+    print("\n[3/4] Iniciando monitoramento em background...") # <--- Mudei para 3/4
     bg_thread = threading.Thread(target=background_tasks, daemon=True)
     bg_thread.start()
+    print("      ✓ Background ativo!")
     
-    # Inicia servidor
-    print("\n" + "=" * 50)
-    print("SERVIDOR INICIADO!")
-    print("Acesse: http://localhost:5000")
-    print("WebSocket disponível em: ws://localhost:5000")
-    print("=" * 50 + "\n")
+    # ==================== ADICIONE AQUI ====================
+    # 4. Workers
+    print("\n[4/4] Iniciando workers de notificação...") # <--- Bloco novo
+    start_background_workers()
+    # =======================================================
+    
+    # Status final
+    print("\n" + "=" * 70)
+    print(" SERVIDOR INICIADO!")
+    print("=" * 70)
+    print("\n 🌐 Dashboard: http://localhost:5000")
+    print(" 🔌 WebSocket: ws://localhost:5000")
+    
+    if arduino_connected:
+        print("\n ✓ Status dos Arduinos:")
+        print(f"   Arduino 1 (Sensores): {arduino_manager.port1}")
+        print(f"   Arduino 2 (Teclado):  {arduino_manager.port2}")
+        print("\n 💡 Configure thresholds no teclado (Arduino 2)")
+    else:
+        print("\n ⚠️  Arduinos não conectados")
+        print("    Verifique conexões USB e tente novamente")
+    
+    print("\n" + "=" * 70)
+    print(" Pressione Ctrl+C para encerrar")
+    print("=" * 70 + "\n")
+    
+    # Inicia o servidor Flask/SocketIO
+    socketio.run(app, host='0.0.0.0', port=5000)
     
     try:
-        socketio.run(app, host='0.0.0.0', port=5000, debug=True, use_reloader=False)
+        socketio.run(
+            app, 
+            host='0.0.0.0', 
+            port=5000, 
+            debug=False,  # Desativa reload automático
+            use_reloader=False
+        )
     except KeyboardInterrupt:
         print("\n\n[APP] Encerrando servidor...")
-        if arduino:
-            arduino.disconnect()
-        print("[APP] Servidor encerrado!")
+        if arduino_manager:
+            arduino_manager.disconnect()
+        print("[APP] ✓ Servidor encerrado!")

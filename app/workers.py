@@ -11,6 +11,8 @@ from email.mime.multipart import MIMEMultipart
 from rabbitmq_config import RabbitMQManager
 from typing import Dict
 import json
+import requests 
+import threading
 
 # ==================== WORKER DE EMAIL ====================
 
@@ -186,6 +188,91 @@ class SMSNotificationWorker:
         else:
             print("✗ Falha ao conectar")
 
+
+# ================== WORKER DE DISCORD ==================
+
+class DiscordNotificationWorker:
+    """
+    Worker que consome alertas críticos e envia via Webhook do Discord
+    Execute: python workers.py discord
+    """
+    
+    def __init__(self):
+        self.rabbitmq = RabbitMQManager()
+        self.webhook_url = "https://discord.com/api/webhooks/1438969223572361237/pCmaG6YYOiYrFxqqMk9IXioB6VPt2TYx2q-AV0Yj8dhUTloUobbuh46m65ao35ayXOtV" 
+    
+    def send_discord_webhook(self, message: Dict):
+        """Envia um alerta formatado para o Discord via Webhook"""
+        
+        alert_type = message.get('type', 'desconhecido')
+        alert_message = message.get('message', 'Sem detalhes')
+        severity = message.get('severity', 'indefinida').upper()
+        timestamp = message.get('timestamp', 'agora')
+
+        # Formata a cor do "embed" baseado na severidade
+        colors = {
+            'CRITICAL': 15158332, # Vermelho
+            'WARNING': 15105570,  # Laranja
+            'INFO': 3447003       # Azul
+        }
+        
+        # Cria um "embed" para uma mensagem bonita
+        embed = {
+            "title": f"🚨 Alerta de Estufa: {alert_type}",
+            "color": colors.get(severity, 15158332), # Padrão para vermelho
+            "description": f"**{alert_message}**",
+            "fields": [
+                {"name": "Severidade", "value": severity, "inline": True},
+                {"name": "Timestamp", "value": timestamp, "inline": True}
+            ],
+            "footer": {"text": "Sistema de Monitoramento de Estufa Inteligente"}
+        }
+        
+        # Monta o payload final
+        data = {
+            "username": "Monitor da Estufa",
+            "avatar_url": "https://i.imgur.com/gJt0MS1.png", # Ícone (opcional)
+            "embeds": [embed]
+        }
+        
+        try:
+            response = requests.post(self.webhook_url, json=data)
+            response.raise_for_status() # Lança erro se o status for 4xx ou 5xx
+            print(f"[DISCORD] ✓ Alerta enviado: {alert_type}")
+            return True
+        except requests.exceptions.RequestException as e:
+            print(f"[DISCORD ERROR] Falha ao enviar webhook: {e}")
+            return False
+
+    def process_alert(self, message: Dict):
+        """Processa um alerta e envia para o Discord"""
+        print(f"\n[DISCORD WORKER] Alerta crítico recebido:")
+        print(f"  Tipo: {message.get('type')}")
+        print(f"  Enviando para Discord...")
+        
+        self.send_discord_webhook(message)
+    
+    def start(self):
+        """Inicia o worker"""
+        print("=" * 60)
+        print("DISCORD NOTIFICATION WORKER")
+        print("=" * 60)
+        
+        if self.rabbitmq.connect():
+            print("✓ Conectado! Aguardando alertas...\n")
+            
+            try:
+                # IMPORTANTE: Veja o Passo 4
+                self.rabbitmq.consume(
+                    self.rabbitmq.queues['discord_notifications'],
+                    self.process_alert
+                )
+            except KeyboardInterrupt:
+                print("\n\n[DISCORD WORKER] Encerrando...")
+                self.rabbitmq.disconnect()
+        else:
+            print("✗ Falha ao conectar")
+
 # ==================== WORKER DE ANALYTICS ====================
 
 class DataAnalyticsWorker:
@@ -320,6 +407,7 @@ USO: python workers.py [worker_type]
 Workers disponíveis:
   email      - Envia emails para alertas críticos
   sms        - Envia SMS para alertas críticos
+  discord    - Envia alertas para o Discord
   analytics  - Processa dados de sensores em batch
   all        - Inicia todos os workers (em threads separadas)
 
@@ -338,6 +426,10 @@ Exemplos:
     elif worker_type == 'sms':
         worker = SMSNotificationWorker()
         worker.start()
+
+    elif worker_type == 'discord':
+        worker = DiscordNotificationWorker()
+        worker.start()
     
     elif worker_type == 'analytics':
         worker = DataAnalyticsWorker()
@@ -351,7 +443,8 @@ Exemplos:
         workers = [
             EmailNotificationWorker(),
             SMSNotificationWorker(),
-            DataAnalyticsWorker()
+            DataAnalyticsWorker(),
+            DiscordNotificationWorker()
         ]
         
         threads = []
@@ -369,7 +462,7 @@ Exemplos:
     
     else:
         print(f"Worker desconhecido: {worker_type}")
-        print("Use: email, sms, analytics, ou all")
+        print("Use: email, sms, discord, analytics, ou all")
 
 if __name__ == '__main__':
     main()

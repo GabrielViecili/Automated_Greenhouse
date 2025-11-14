@@ -1,19 +1,24 @@
+"""
+RABBITMQ - APENAS PARA ALERTAS CRÍTICOS
+- Falhas de conexão com Arduinos
+- Timeout de sensores
+- Erros críticos do sistema
+
+NÃO é usado para dados normais (isso fica no WebSocket + SQLite)
+"""
+
 import pika
 import json
-import time
 from datetime import datetime
-from typing import Callable, Dict, Any
 
 class RabbitMQManager:
-    """Gerenciador de conexão e publicação no RabbitMQ"""
+    """Gerenciador simplificado - apenas alertas críticos"""
     
     def __init__(self, host='localhost', port=5672, username='guest', password='guest'):
         """
-        Inicializa conexão com RabbitMQ
-        
         Args:
-            host: Endereço do servidor RabbitMQ
-            port: Porta do RabbitMQ
+            host: Endereço do RabbitMQ
+            port: Porta (padrão 5672)
             username: Usuário
             password: Senha
         """
@@ -23,27 +28,18 @@ class RabbitMQManager:
         self.connection = None
         self.channel = None
         
-        # Definição das exchanges e filas
-        self.exchanges = {
-            'sensor_data': 'greenhouse.sensors',      # Dados dos sensores
-            'alerts': 'greenhouse.alerts',            # Alertas do sistema
-            'commands': 'greenhouse.commands',        # Comandos para Arduino
-            'logs': 'greenhouse.logs'                 # Logs do sistema
-        }
-        
+        # Apenas 1 exchange e 1 fila (simplificado)
+        self.exchange_name = 'greenhouse.critical_alerts'
         self.queues = {
-            'sensor_readings': 'queue.sensor.readings',
-            'sensor_alerts': 'queue.sensor.alerts',
-            'email_notifications': 'queue.notifications.email',
-            'sms_notifications': 'queue.notifications.sms',
-            'data_analytics': 'queue.analytics.data',
-            'command_arduino': 'queue.commands.arduino'
+            'email_notifications': 'queue.email_alerts',
+            'sms_notifications': 'queue.sms_alerts',
+            'data_analytics': 'queue.sensor_data',
+            'discord_notifications': 'queue.discord_alerts'
         }
-    
     def connect(self):
-        """Estabelece conexão com RabbitMQ"""
+        """Conecta ao RabbitMQ"""
         try:
-            connection_params = pika.ConnectionParameters(
+            params = pika.ConnectionParameters(
                 host=self.host,
                 port=self.port,
                 credentials=self.credentials,
@@ -51,158 +47,87 @@ class RabbitMQManager:
                 blocked_connection_timeout=300
             )
             
-            self.connection = pika.BlockingConnection(connection_params)
+            self.connection = pika.BlockingConnection(params)
             self.channel = self.connection.channel()
             
-            # Declara exchanges
-            for exchange_type, exchange_name in self.exchanges.items():
-                self.channel.exchange_declare(
-                    exchange=exchange_name,
-                    exchange_type='topic',
-                    durable=True
-                )
+            # Declara exchange
+            self.channel.exchange_declare(
+                exchange=self.exchange_name,
+                exchange_type='topic',
+                durable=True
+            )
             
-            # Declara filas
-            for queue_name in self.queues.values():
-                self.channel.queue_declare(
-                    queue=queue_name,
-                    durable=True
-                )
+            # Declara fila
+            self.channel.queue_declare(
+                queue=self.queue_name,
+                durable=True
+            )
             
-            # Bindings (conecta exchanges às filas)
-            self._setup_bindings()
+            # Binding
+            self.channel.queue_bind(
+                exchange=self.exchange_name,
+                queue=self.queue_name,
+                routing_key='alert.critical'
+            )
+
+            self.channel.queue_declare(
+                queue=self.queues['discord_notifications'],
+                durable=True
+            )
+
+            self.channel.queue_bind(
+                exchange=self.exchange_name,
+                queue=self.queues['discord_notifications'],
+                routing_key='alert.critical' # Assumindo que escuta os mesmos alertas
+            )
             
             print(f"[RABBITMQ] Conectado em {self.host}:{self.port}")
+            print(f"[RABBITMQ] Exchange: {self.exchange_name}")
+            print(f"[RABBITMQ] Fila: {self.queue_name}")
             return True
             
         except Exception as e:
-            print(f"[RABBITMQ ERROR] Falha na conexão: {e}")
+            print(f"[RABBITMQ ERROR] Falha: {e}")
             return False
     
-    def _setup_bindings(self):
-        """Configura bindings entre exchanges e filas"""
-        bindings = [
-            # Dados de sensores vão para múltiplas filas
-            (self.exchanges['sensor_data'], self.queues['sensor_readings'], 'sensor.#'),
-            (self.exchanges['sensor_data'], self.queues['data_analytics'], 'sensor.#'),
-            
-            # Alertas vão para notificações
-            (self.exchanges['alerts'], self.queues['sensor_alerts'], 'alert.#'),
-            (self.exchanges['alerts'], self.queues['email_notifications'], 'alert.critical'),
-            (self.exchanges['alerts'], self.queues['sms_notifications'], 'alert.critical'),
-            
-            # Comandos para Arduino
-            (self.exchanges['commands'], self.queues['command_arduino'], 'command.#')
-        ]
-        
-        for exchange, queue, routing_key in bindings:
-            self.channel.queue_bind(
-                exchange=exchange,
-                queue=queue,
-                routing_key=routing_key
-            )
-    
-    def publish_sensor_data(self, data: Dict[str, Any]):
+    def publish_alert(self, alert_data):
         """
-        Publica dados dos sensores
+        Publica alerta crítico
         
         Args:
-            data: Dicionário com dados dos sensores (temp, humid, soil, light)
+            alert_data: Dict com {type, message, severity, ...}
         """
         try:
             message = {
                 'timestamp': datetime.now().isoformat(),
-                'data': data,
-                'source': 'arduino'
+                'type': alert_data.get('type', 'unknown'),
+                'message': alert_data.get('message', ''),
+                'severity': alert_data.get('severity', 'critical'),
+                'source': 'greenhouse_system'
             }
             
             self.channel.basic_publish(
-                exchange=self.exchanges['sensor_data'],
-                routing_key='sensor.reading',
+                exchange=self.exchange_name,
+                routing_key='alert.critical',
                 body=json.dumps(message),
                 properties=pika.BasicProperties(
-                    delivery_mode=2,  # Mensagem persistente
-                    content_type='application/json'
+                    delivery_mode=2,  # Persistente
+                    content_type='application/json',
+                    priority=9
                 )
             )
             
-            print(f"[RABBITMQ] Sensor data publicado: {data}")
+            print(f"[RABBITMQ] Alerta publicado: {alert_data.get('type')}")
             
         except Exception as e:
             print(f"[RABBITMQ ERROR] Falha ao publicar: {e}")
     
-    def publish_alert(self, alert_type: str, message: str, severity: str = 'warning'):
+    def consume(self, callback):
         """
-        Publica um alerta
+        Consome alertas da fila
         
         Args:
-            alert_type: Tipo do alerta
-            message: Mensagem do alerta
-            severity: Severidade (warning, critical)
-        """
-        try:
-            alert_data = {
-                'timestamp': datetime.now().isoformat(),
-                'type': alert_type,
-                'message': message,
-                'severity': severity
-            }
-            
-            routing_key = f'alert.{severity}'
-            
-            self.channel.basic_publish(
-                exchange=self.exchanges['alerts'],
-                routing_key=routing_key,
-                body=json.dumps(alert_data),
-                properties=pika.BasicProperties(
-                    delivery_mode=2,
-                    content_type='application/json',
-                    priority=9 if severity == 'critical' else 5
-                )
-            )
-            
-            print(f"[RABBITMQ] Alerta publicado: {alert_type} - {severity}")
-            
-        except Exception as e:
-            print(f"[RABBITMQ ERROR] Falha ao publicar alerta: {e}")
-    
-    def publish_command(self, command: str, details: Dict = None):
-        """
-        Publica comando para Arduino
-        
-        Args:
-            command: Comando a ser enviado
-            details: Detalhes adicionais do comando
-        """
-        try:
-            command_data = {
-                'timestamp': datetime.now().isoformat(),
-                'command': command,
-                'details': details or {}
-            }
-            
-            self.channel.basic_publish(
-                exchange=self.exchanges['commands'],
-                routing_key='command.arduino',
-                body=json.dumps(command_data),
-                properties=pika.BasicProperties(
-                    delivery_mode=2,
-                    content_type='application/json'
-                )
-            )
-            
-            print(f"[RABBITMQ] Comando publicado: {command}")
-            
-        except Exception as e:
-            print(f"[RABBITMQ ERROR] Falha ao publicar comando: {e}")
-    
-    def consume(self, queue_name: str, callback: Callable):
-        """
-        Consome mensagens de uma fila
-        
-        Args:
-            queue_name: Nome da fila
-            callback: Função a ser chamada para cada mensagem
+            callback: Função a ser chamada para cada alerta
         """
         try:
             def on_message(ch, method, properties, body):
@@ -216,127 +141,107 @@ class RabbitMQManager:
             
             self.channel.basic_qos(prefetch_count=1)
             self.channel.basic_consume(
-                queue=queue_name,
+                queue=self.queue_name,
                 on_message_callback=on_message
             )
             
-            print(f"[RABBITMQ] Consumindo da fila: {queue_name}")
+            print(f"[RABBITMQ] Consumindo da fila: {self.queue_name}")
+            print("[RABBITMQ] Aguardando alertas críticos...")
             self.channel.start_consuming()
             
         except Exception as e:
             print(f"[RABBITMQ ERROR] Erro ao consumir: {e}")
     
     def disconnect(self):
-        """Fecha conexão com RabbitMQ"""
+        """Fecha conexão"""
         try:
             if self.connection and not self.connection.is_closed:
                 self.connection.close()
                 print("[RABBITMQ] Conexão fechada")
         except Exception as e:
-            print(f"[RABBITMQ ERROR] Erro ao fechar conexão: {e}")
+            print(f"[RABBITMQ ERROR] Erro ao fechar: {e}")
 
 
-# Worker de exemplo para processar notificações por email
-class EmailNotificationWorker:
-    """Worker que consome alertas críticos e envia emails"""
+# ==================== WORKER EXEMPLO ====================
+
+class AlertConsumerWorker:
+    """
+    Worker que consome alertas críticos
+    Execute em processo separado: python -c "from rabbitmq_config import AlertConsumerWorker; AlertConsumerWorker().start()"
+    """
     
-    def __init__(self, rabbitmq_manager: RabbitMQManager):
-        self.rabbitmq = rabbitmq_manager
+    def __init__(self):
+        self.rabbitmq = RabbitMQManager()
     
-    def process_alert(self, message: Dict):
-        """Processa um alerta e envia email"""
-        print(f"\n[EMAIL WORKER] Processando alerta:")
-        print(f"  Tipo: {message.get('type')}")
-        print(f"  Mensagem: {message.get('message')}")
-        print(f"  Severidade: {message.get('severity')}")
-        print(f"  Timestamp: {message.get('timestamp')}")
+    def process_alert(self, message):
+        """Processa um alerta crítico"""
+        print("\n" + "=" * 60)
+        print("🚨 ALERTA CRÍTICO RECEBIDO")
+        print("=" * 60)
+        print(f"Tipo: {message.get('type')}")
+        print(f"Mensagem: {message.get('message')}")
+        print(f"Severidade: {message.get('severity')}")
+        print(f"Timestamp: {message.get('timestamp')}")
+        print("=" * 60 + "\n")
         
-        # Aqui você implementaria o envio real de email
-        # usando SMTP, SendGrid, AWS SES, etc.
-        print(f"[EMAIL] Email enviado para admin@estufa.com")
+        # Aqui você pode:
+        # - Enviar email
+        # - Enviar SMS
+        # - Notificação push
+        # - Acionar alarme físico
+        # - Registrar em log externo
     
     def start(self):
         """Inicia o worker"""
-        print("[EMAIL WORKER] Iniciando...")
-        self.rabbitmq.consume(
-            self.rabbitmq.queues['email_notifications'],
-            self.process_alert
-        )
+        print("=" * 60)
+        print("WORKER DE ALERTAS CRÍTICOS")
+        print("=" * 60)
+        
+        if self.rabbitmq.connect():
+            print("✓ Conectado! Aguardando alertas...\n")
+            
+            try:
+                self.rabbitmq.consume(self.process_alert)
+            except KeyboardInterrupt:
+                print("\n\n[WORKER] Encerrando...")
+                self.rabbitmq.disconnect()
+        else:
+            print("✗ Falha ao conectar")
 
 
-# Worker de exemplo para analytics
-class DataAnalyticsWorker:
-    """Worker que processa dados para analytics"""
-    
-    def __init__(self, rabbitmq_manager: RabbitMQManager):
-        self.rabbitmq = rabbitmq_manager
-        self.buffer = []
-        self.buffer_size = 10
-    
-    def process_data(self, message: Dict):
-        """Processa dados de sensores"""
-        data = message.get('data', {})
-        self.buffer.append(data)
-        
-        if len(self.buffer) >= self.buffer_size:
-            self.analyze_batch()
-            self.buffer = []
-    
-    def analyze_batch(self):
-        """Analisa lote de dados"""
-        if not self.buffer:
-            return
-        
-        # Calcula médias
-        avg_temp = sum(d.get('temp', 0) for d in self.buffer) / len(self.buffer)
-        avg_humid = sum(d.get('humid', 0) for d in self.buffer) / len(self.buffer)
-        avg_soil = sum(d.get('soil', 0) for d in self.buffer) / len(self.buffer)
-        
-        print(f"\n[ANALYTICS] Análise de {len(self.buffer)} leituras:")
-        print(f"  Temp média: {avg_temp:.1f}°C")
-        print(f"  Umidade ar média: {avg_humid:.1f}%")
-        print(f"  Umidade solo média: {avg_soil:.1f}%")
-        
-        # Aqui você poderia:
-        # - Salvar em banco de dados de analytics
-        # - Treinar modelos ML
-        # - Gerar relatórios
-        # - Detectar padrões
-    
-    def start(self):
-        """Inicia o worker"""
-        print("[ANALYTICS WORKER] Iniciando...")
-        self.rabbitmq.consume(
-            self.rabbitmq.queues['data_analytics'],
-            self.process_data
-        )
-
+# ==================== TESTE ====================
 
 if __name__ == '__main__':
-    # Teste de conexão
-    print("=== TESTE RABBITMQ ===\n")
+    import sys
     
-    manager = RabbitMQManager()
-    
-    if manager.connect():
-        # Publica dados de teste
-        manager.publish_sensor_data({
-            'temp': 25.5,
-            'humid': 60,
-            'soil': 45,
-            'light': 80
-        })
-        
-        # Publica alerta de teste
-        manager.publish_alert(
-            'low_soil_moisture',
-            'Umidade do solo abaixo de 30%',
-            'critical'
-        )
-        
-        time.sleep(1)
-        manager.disconnect()
-        
-        print("\n✓ Teste concluído!")
+    if len(sys.argv) > 1 and sys.argv[1] == 'worker':
+        # Modo worker
+        worker = AlertConsumerWorker()
+        worker.start()
     else:
-        print("\n✗ Falha no teste")
+        # Teste de publicação
+        print("=" * 60)
+        print("TESTE RABBITMQ - ALERTA CRÍTICO")
+        print("=" * 60)
+        
+        manager = RabbitMQManager()
+        
+        if manager.connect():
+            # Publica alerta de teste
+            manager.publish_alert({
+                'type': 'test_alert',
+                'message': 'Teste de alerta crítico do sistema',
+                'severity': 'critical'
+            })
+            
+            print("\n✓ Alerta publicado!")
+            print("\nPara consumir, execute:")
+            print("  python rabbitmq_config.py worker")
+            
+            manager.disconnect()
+        else:
+            print("\n✗ Falha no teste")
+            print("\nVerifique se o RabbitMQ está rodando:")
+            print("  sudo systemctl status rabbitmq-server")
+            print("  ou")
+            print("  docker ps (se estiver usando Docker)")
