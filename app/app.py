@@ -45,7 +45,7 @@ arduino_connected = False
 def on_arduino_data(data):
     """Callback quando dados chegam do Arduino 1 (sensores)"""
     # Emite dados em tempo real via WebSocket para todos clientes
-    socketio.emit('sensor_data', data, broadcast=True)
+    socketio.emit('sensor_data', data)
     print(f"[WS] Dados emitidos: T:{data.get('temp')}°C H:{data.get('humid')}% S:{data.get('soil')}%")
 
 def init_arduinos():

@@ -19,7 +19,7 @@ class DiscordNotificationWorker:
         
         # Configure seu Webhook do Discord aqui
         # Tutorial: Discord > Server Settings > Integrations > Webhooks > New Webhook
-        self.webhook_url = webhook_url or "YOUR_DISCORD_WEBHOOK_URL_HERE"
+        self.webhook_url = webhook_url or "https://discord.com/api/webhooks/1438969223572361237/pCmaG6YYOiYrFxqqMk9IXioB6VPt2TYx2q-AV0Yj8dhUTloUobbuh46m65ao35ayXOtV"
         
         # Emojis para diferentes tipos de alerta
         self.emoji_map = {
