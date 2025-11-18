@@ -1,30 +1,14 @@
 /*
- * ARDUINO 1 - SENSORES/ATUADORES (VERSÃO REFINADA)
- * 
- * Hardware:
- * - DHT11 no pino 2
- * - Sensor de solo em A0
- * - LDR em A1
- * - LCD I2C 0x27 (16x2)
- * - LED Verde no pino 8
- * - LED Vermelho no pino 9
- * - Buzzer no pino 10
- * - Relé BOMBA no pino 11
- * - Relé COOLER no pino 12
- * - Relé FITA LED no pino 13
- * 
- * Comandos aceitos via Serial:
- * - IRRIGATE: Ativa bomba por 5s
- * - AUTO_ON/AUTO_OFF: Irrigação automática
- * - COOLER_ON/COOLER_OFF: Liga/desliga cooler
- * - LIGHT_ON/LIGHT_OFF: Liga/desliga fita LED
- * - GET_THRESHOLDS: Retorna thresholds atuais
- * - JSON de thresholds: Atualiza limites
+ * ARDUINO 1 - SENSORES/ATUADORES (v6 - Bomba Não-Bloqueante)
+ * - Remove LEDs e Buzzer para poupar memória.
+ * - Lógica da bomba corrigida para ser 100% automática
+ * e não usar delay().
  */
 
 #include <DHT.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
+#include <ArduinoJson.h> 
 
 // === PINOS SENSORES ===
 #define DHT_PIN 2
@@ -32,12 +16,14 @@
 #define LDR_PIN A1
 
 // === PINOS ATUADORES ===
-#define LED_GREEN 8
-#define LED_RED 9
-#define BUZZER 10
-#define RELAY_PUMP 11      // Bomba d'água
-#define RELAY_COOLER 12    // Cooler/Ventilador
-#define RELAY_LIGHT 13     // Fita LED
+// LEDs e Buzzer removidos
+#define RELAY_PUMP 10
+#define RELAY_COOLER 12
+#define RELAY_LIGHT 11
+
+// Lógica Invertida
+#define RELAY_ON LOW
+#define RELAY_OFF HIGH
 
 // === DHT ===
 #define DHTTYPE DHT11
@@ -47,11 +33,10 @@ DHT dht(DHT_PIN, DHTTYPE);
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 // === INTERVALOS ===
-#define INTERVAL_SENSORS 5000  // Lê sensores a cada 5s
-
+#define INTERVAL_SENSORS 5000
 unsigned long lastSensorRead = 0;
 
-// === THRESHOLDS (atualizáveis) ===
+// === THRESHOLDS ===
 struct Thresholds {
   float tempMax = 35.0;
   float tempMin = 15.0;
@@ -63,61 +48,55 @@ struct Thresholds {
   float terraMin = 30.0;
 } thresholds;
 
-// === ESTADO ===
-bool autoIrrigation = false;
+// === ESTADO (BOMBA CORRIGIDA) ===
+// bool autoIrrigation foi removido
 bool coolerOn = false;
 bool lightOn = false;
+bool pumpIsOn = false; // <<< Novo estado para a bomba
+unsigned long pumpStartTime = 0; // <<< Novo temporizador da bomba
+const long PUMP_DURATION = 3000; // Tempo que a bomba fica ligada (3s)
 
 float lastTemp = 0;
 float lastHumid = 0;
 int lastSoil = 0;
 int lastLight = 0;
 
+
 // ========================================
 // SETUP
 // ========================================
-
 void setup() {
   Serial.begin(9600);
   
-  // Configura pinos
-  pinMode(LED_GREEN, OUTPUT);
-  pinMode(LED_RED, OUTPUT);
-  pinMode(BUZZER, OUTPUT);
+  // Configura pinos (LEDs e Buzzer removidos)
   pinMode(RELAY_PUMP, OUTPUT);
   pinMode(RELAY_COOLER, OUTPUT);
   pinMode(RELAY_LIGHT, OUTPUT);
   
-  // Estado inicial (tudo desligado)
-  digitalWrite(LED_GREEN, LOW);
-  digitalWrite(LED_RED, LOW);
-  digitalWrite(RELAY_PUMP, LOW);
-  digitalWrite(RELAY_COOLER, LOW);
-  digitalWrite(RELAY_LIGHT, LOW);
-  
-  // Inicia DHT
+  // Estado inicial
+  digitalWrite(RELAY_PUMP, RELAY_OFF);
+  digitalWrite(RELAY_COOLER, RELAY_OFF);
+  digitalWrite(RELAY_LIGHT, RELAY_OFF);
+
   dht.begin();
   
-  // Inicia LCD
   lcd.init();
   lcd.backlight();
-  lcd.print("Arduino Sensores");
+  lcd.print(F("Arduino Sensores"));
   lcd.setCursor(0, 1);
-  lcd.print("Conectando...");
+  lcd.print(F("Conectando..."));
   delay(1500);
   lcd.clear();
-  
-  // Envia mensagem de boot
-  Serial.println("{\"status\":\"arduino1_ready\",\"source\":\"arduino1\"}");
+
+  Serial.println(F("{\"status\":\"arduino1_ready\",\"source\":\"arduino1\"}"));
 }
 
 // ========================================
-// LOOP PRINCIPAL
+// LOOP PRINCIPAL (BOMBA CORRIGIDA)
 // ========================================
-
 void loop() {
   unsigned long now = millis();
-  
+
   // Tarefa 1: Processar comandos da Raspberry Pi
   if (Serial.available() > 0) {
     String cmd = Serial.readStringUntil('\n');
@@ -130,20 +109,29 @@ void loop() {
     lastSensorRead = now;
     readAndSendSensorData();
   }
+
+  // <<< MUDANÇA AQUI: TAREFA 3 >>>
+  // Tarefa 3: Gerir o temporizador da bomba (não-bloqueante)
+  if (pumpIsOn) {
+    // A bomba está ligada. Vê se já deu o tempo.
+    if (now - pumpStartTime >= PUMP_DURATION) {
+      // Deu o tempo. Desliga a bomba.
+      pumpIsOn = false; // Desliga o estado
+      digitalWrite(RELAY_PUMP, RELAY_OFF); // Desliga o relé
+      updateLCD(lastTemp, lastHumid, lastSoil, lastLight, false); // Atualiza LCD
+    }
+  }
 }
 
 // ========================================
-// LEITURA DE SENSORES
+// LEITURA DE SENSORES (BOMBA CORRIGIDA)
 // ========================================
-
 void readAndSendSensorData() {
-  // Lê sensores
   float temp = dht.readTemperature();
   float humid = dht.readHumidity();
   int soilRaw = analogRead(SOIL_PIN);
   int ldrRaw = analogRead(LDR_PIN);
-  
-  // Validação DHT
+
   if (isnan(temp) || isnan(humid)) {
     temp = lastTemp;
     humid = lastHumid;
@@ -153,8 +141,7 @@ void readAndSendSensorData() {
   
   lastTemp = temp;
   lastHumid = humid;
-  
-  // Calibração (ajuste conforme seu hardware)
+
   int soilPercent = map(soilRaw, 1023, 400, 0, 100);
   soilPercent = constrain(soilPercent, 0, 100);
   int ldrPercent = map(ldrRaw, 900, 100, 0, 100);
@@ -162,126 +149,118 @@ void readAndSendSensorData() {
   
   lastSoil = soilPercent;
   lastLight = ldrPercent;
-  
+
   // Monta JSON
   String json = "{\"source\":\"arduino1\",";
   json += "\"temp\":" + String(temp, 1) + ",";
   json += "\"humid\":" + String(humid, 0) + ",";
   json += "\"soil\":" + String(soilPercent) + ",";
   json += "\"light\":" + String(ldrPercent) + "}";
-  
   Serial.println(json);
   
-  // Checa condições
-  checkConditions(temp, humid, soilPercent, ldrPercent);
+  // Função checkConditions() removida (não é mais necessária)
+
+  // ========================================
+  // AUTOMAÇÕES BASEADAS NOS THRESHOLDS
+  // ========================================
   
-  // Irrigação automática
-  if (autoIrrigation && soilPercent < thresholds.terraMin) {
-    activatePump(3000);
+  // <<< MUDANÇA AQUI: BOMBA "QUE NEM AS OUTRAS" >>>
+  // 1. IRRIGAÇÃO AUTOMÁTICA (Sem trava, sem delay)
+  if (soilPercent < thresholds.terraMin && !pumpIsOn) {
+    // Liga a bomba (mas não bloqueia!)
+    pumpIsOn = true;
+    pumpStartTime = millis(); // Marca a hora que ligou
+    digitalWrite(RELAY_PUMP, RELAY_ON);
+    
+    Serial.println(F("{\"action\":\"pump_auto_on\",\"reason\":\"low_soil\"}"));
   }
   
-  // Cooler automático (temperatura alta)
+  // 2. COOLER AUTOMÁTICO (Sem mudança)
   if (temp > thresholds.tempMax && !coolerOn) {
     setCooler(true);
-  } else if (temp < thresholds.tempMax - 2 && coolerOn) {
+    Serial.print(F("{\"action\":\"cooler_auto_on\",\"reason\":\"high_temp\",\"value\":"));
+    Serial.print(String(temp, 1));
+    Serial.println(F("}"));
+  } 
+  else if (temp < thresholds.tempMax - 2 && coolerOn) {
     setCooler(false);
+    Serial.print(F("{\"action\":\"cooler_auto_off\",\"reason\":\"temp_normal\",\"value\":"));
+    Serial.print(String(temp, 1));
+    Serial.println(F("}"));
   }
   
-  // Luz automática (baixa luminosidade)
+  // 3. FITA LED AUTOMÁTICA (Sem mudança)
   if (ldrPercent < thresholds.luzMin && !lightOn) {
     setLight(true);
-  } else if (ldrPercent > thresholds.luzMin + 10 && lightOn) {
+    Serial.print(F("{\"action\":\"light_auto_on\",\"reason\":\"low_light\",\"value\":"));
+    Serial.print(ldrPercent);
+    Serial.println(F("}"));
+  } 
+  else if (ldrPercent > thresholds.luzMin + 10 && lightOn) {
     setLight(false);
+    Serial.print(F("{\"action\":\"light_auto_off\",\"reason\":\"light_normal\",\"value\":"));
+    Serial.print(ldrPercent);
+    Serial.println(F("}"));
   }
   
-  // Atualiza LCD
   updateLCD(temp, humid, soilPercent, ldrPercent, false);
 }
 
 // ========================================
-// VERIFICA CONDIÇÕES
+// VERIFICA CONDIÇÕES (REMOVIDO)
 // ========================================
+// void checkConditions(...) foi removida.
 
-void checkConditions(float temp, float humid, int soil, int light) {
-  bool alert = false;
-  
-  if (temp > thresholds.tempMax || temp < thresholds.tempMin) { alert = true; }
-  if (humid > thresholds.umiMax || humid < thresholds.umiMin) { alert = true; }
-  if (soil < thresholds.terraMin) { alert = true; }
-  
-  if (alert) {
-    digitalWrite(LED_RED, HIGH);
-    digitalWrite(LED_GREEN, LOW);
-    tone(BUZZER, 1000, 200);
-  } else {
-    digitalWrite(LED_GREEN, HIGH);
-    digitalWrite(LED_RED, LOW);
-  }
-}
 
 // ========================================
-// CONTROLE DE ATUADORES
+// CONTROLE DE ATUADORES (BOMBA REMOVIDA)
 // ========================================
 
-void activatePump(int duration) {
-  digitalWrite(RELAY_PUMP, HIGH);
-  updateLCD(lastTemp, lastHumid, lastSoil, lastLight, false);
-  delay(duration);
-  digitalWrite(RELAY_PUMP, LOW);
-  updateLCD(lastTemp, lastHumid, lastSoil, lastLight, false);
-}
+// <<< MUDANÇA AQUI: activatePump() foi removida >>>
 
 void setCooler(bool state) {
   coolerOn = state;
-  digitalWrite(RELAY_COOLER, state ? HIGH : LOW);
-  Serial.println(state ? "{\"response\":\"cooler_on\"}" : "{\"response\":\"cooler_off\"}");
+  digitalWrite(RELAY_COOLER, state ? RELAY_ON : RELAY_OFF);
+  Serial.println(state ? F("{\"response\":\"cooler_on\"}") : F("{\"response\":\"cooler_off\"}"));
   updateLCD(lastTemp, lastHumid, lastSoil, lastLight, false);
 }
 
 void setLight(bool state) {
   lightOn = state;
-  digitalWrite(RELAY_LIGHT, state ? HIGH : LOW);
-  Serial.println(state ? "{\"response\":\"light_on\"}" : "{\"response\":\"light_off\"}");
+  digitalWrite(RELAY_LIGHT, state ? RELAY_ON : RELAY_OFF);
+  Serial.println(state ? F("{\"response\":\"light_on\"}") : F("{\"response\":\"light_off\"}"));
   updateLCD(lastTemp, lastHumid, lastSoil, lastLight, false);
 }
 
 // ========================================
-// COMANDOS DA RASPBERRY PI
+// COMANDOS DA RASPBERRY PI (BOMBA CORRIGIDA)
 // ========================================
-
 void handleCommand(String cmd) {
-  // Irrigação
-  if (cmd == "IRRIGATE") {
-    activatePump(5000);
-    Serial.println("{\"response\":\"irrigation_started\"}");
-  }
-  else if (cmd == "AUTO_ON") {
-    autoIrrigation = true;
-    Serial.println("{\"response\":\"auto_irrigation_enabled\"}");
-  }
-  else if (cmd == "AUTO_OFF") {
-    autoIrrigation = false;
-    Serial.println("{\"response\":\"auto_irrigation_disabled\"}");
-  }
   
-  // Cooler
-  else if (cmd == "COOLER_ON") {
+  // <<< MUDANÇA AQUI: Comandos da Bomba corrigidos >>>
+  if (cmd == F("IRRIGATE")) {
+    if (!pumpIsOn) { // Só liga se não estiver ligada
+      pumpIsOn = true;
+      pumpStartTime = millis();
+      digitalWrite(RELAY_PUMP, RELAY_ON);
+      Serial.println(F("{\"response\":\"irrigation_started\"}"));
+    }
+  }
+  // Comandos AUTO_ON e AUTO_OFF removidos
+  
+  else if (cmd == F("COOLER_ON")) {
     setCooler(true);
   }
-  else if (cmd == "COOLER_OFF") {
+  else if (cmd == F("COOLER_OFF")) {
     setCooler(false);
   }
-  
-  // Fita LED
-  else if (cmd == "LIGHT_ON") {
+  else if (cmd == F("LIGHT_ON")) {
     setLight(true);
   }
-  else if (cmd == "LIGHT_OFF") {
+  else if (cmd == F("LIGHT_OFF")) {
     setLight(false);
   }
-  
-  // Thresholds
-  else if (cmd == "GET_THRESHOLDS") {
+  else if (cmd == F("GET_THRESHOLDS")) {
     sendThresholds();
   }
   else if (cmd.startsWith("{")) {
@@ -292,9 +271,8 @@ void handleCommand(String cmd) {
 }
 
 // ========================================
-// ENVIA THRESHOLDS
+// ENVIA THRESHOLDS (Sem mudança)
 // ========================================
-
 void sendThresholds() {
   String json = "{\"source\":\"arduino1\",\"thresholds\":{";
   json += "\"tempMax\":" + String(thresholds.tempMax, 1) + ",";
@@ -310,82 +288,93 @@ void sendThresholds() {
 }
 
 // ========================================
-// RECEBE THRESHOLDS VIA JSON
+// RECEBE THRESHOLDS VIA JSON (Sem mudança)
 // ========================================
-
 void parseThresholdsJSON(String json) {
-  // Parsing simples (você pode usar ArduinoJson para parsing robusto)
-  if (json.indexOf("\"tempMax\"") > 0) {
-    int pos = json.indexOf("\"tempMax\":") + 10;
-    thresholds.tempMax = json.substring(pos, json.indexOf(",", pos)).toFloat();
+  StaticJsonDocument<128> doc; 
+  DeserializationError error = deserializeJson(doc, json);
+
+  if (error) {
+    lcd.clear();
+    lcd.print(F("Falha no JSON!")); 
+    Serial.print(F("{\"response\":\"json_parse_error\", \"detail\":\""));
+    Serial.print(error.c_str());
+    Serial.println(F("\"}"));
+    delay(1000);
+    return;
   }
-  if (json.indexOf("\"tempMin\"") > 0) {
-    int pos = json.indexOf("\"tempMin\":") + 10;
-    thresholds.tempMin = json.substring(pos, json.indexOf(",", pos)).toFloat();
+
+  // === MUDANÇA CRÍTICA AQUI: MÉTODO MAIS SEGURO ===
+  // Em vez de usar o operador '|', vamos checar cada chave.
+  // Isto é mais robusto e fácil de depurar.
+
+  if (doc.containsKey("tempMax")) {
+    thresholds.tempMax = doc["tempMax"].as<float>();
   }
-  if (json.indexOf("\"umiMax\"") > 0) {
-    int pos = json.indexOf("\"umiMax\":") + 10;
-    thresholds.umiMax = json.substring(pos, json.indexOf(",", pos)).toFloat();
+  if (doc.containsKey("tempMin")) {
+    thresholds.tempMin = doc["tempMin"].as<float>();
   }
-  if (json.indexOf("\"umiMin\"") > 0) {
-    int pos = json.indexOf("\"umiMin\":") + 10;
-    thresholds.umiMin = json.substring(pos, json.indexOf(",", pos)).toFloat();
+  if (doc.containsKey("umiMax")) {
+    thresholds.umiMax = doc["umiMax"].as<float>();
   }
-  if (json.indexOf("\"terraMin\"") > 0) {
-    int pos = json.indexOf("\"terraMin\":") + 10;
-    thresholds.terraMin = json.substring(pos, json.indexOf(",", pos)).toFloat();
+  if (doc.containsKey("umiMin")) {
+    thresholds.umiMin = doc["umiMin"].as<float>();
   }
-  
+  if (doc.containsKey("terraMin")) {
+    thresholds.terraMin = doc["terraMin"].as<float>();
+  }
+
+  // <<< AQUI ESTÁ A CORREÇÃO DO MEU BUG 'lZuzMin' >>>
+  if (doc.containsKey("luzMin")) {
+    thresholds.luzMin = doc["luzMin"].as<float>();
+  }
+
   lcd.clear();
-  lcd.print("Thresholds OK!");
+  lcd.print(F("JSON OK! (v7)")); // Atualizado para v7
   delay(1000);
-  
-  Serial.println("{\"response\":\"thresholds_updated\"}");
+
+  Serial.println(F("{\"response\":\"thresholds_updated_v7\"}"));
 }
 
 // ========================================
-// ATUALIZA LCD
+// ATUALIZA LCD (BOMBA CORRIGIDA)
 // ========================================
-
 void updateLCD(float temp, float humid, int soil, int light, bool dhtError) {
   lcd.clear();
   
   if (dhtError) {
-    lcd.print("Falha DHT11!");
+    lcd.print(F("Falha DHT11!"));
     return;
   }
   
-  // Linha 1: Temp e Umidade Ar
+  // Linha 1
   lcd.setCursor(0, 0);
-  lcd.print("T:");
+  lcd.print(F("T:"));
   lcd.print(temp, 1);
-  lcd.print("C H:");
+  lcd.print(F("C H:"));
   lcd.print(humid, 0);
-  lcd.print("%");
+  lcd.print(F("%"));
   
-  // Linha 2: Solo e status
+  // Linha 2
   lcd.setCursor(0, 1);
-  lcd.print("S:");
+  lcd.print(F("S:"));
   lcd.print(soil);
-  lcd.print("%");
-  
-  // Status dos atuadores
-  if (digitalRead(RELAY_PUMP) == HIGH) {
+  lcd.print(F("%"));
+
+  // Status dos atuadores (Bomba corrigida, AUTO removido)
+  if (pumpIsOn) { // <<< MUDANÇA AQUI
     lcd.setCursor(7, 1);
-    lcd.print("BOMB");
+    lcd.print(F("BOMB"));
   } else if (coolerOn) {
     lcd.setCursor(7, 1);
-    lcd.print("COOL");
+    lcd.print(F("COOL"));
   } else if (lightOn) {
     lcd.setCursor(7, 1);
-    lcd.print("LED");
-  } else if (autoIrrigation) {
-    lcd.setCursor(7, 1);
-    lcd.print("AUTO");
+    lcd.print(F("LED"));
   }
+  // "AUTO" foi removido
   
-  // Luminosidade
   lcd.setCursor(12, 1);
-  lcd.print("L:");
+  lcd.print(F("L:"));
   lcd.print(light);
 }

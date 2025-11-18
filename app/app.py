@@ -17,6 +17,7 @@ from datetime import datetime
 import threading
 import time
 import os
+from rabbitmq_config import RabbitMQManager
 
 # Importações locais
 from database import (
@@ -216,21 +217,86 @@ def api_auto_irrigation():
     else:
         return jsonify({'error': 'Falha ao enviar'}), 500
 
+# Em app.py
+@app.route('/api/thresholds', methods=['POST'])
+def update_thresholds(): # Mudei o nome para corresponder ao index.html
+    """
+    Endpoint para atualizar os thresholds (limites) a partir do website.
+    """
+    global arduino_manager
+    if not arduino_manager:
+        return jsonify({"success": False, "message": "Arduino não conectado"}), 500
+
+    data = request.json
+    
+    # <<< AQUI ESTÁ A CORREÇÃO >>>
+    # Chama a função correta no manager, que processa E envia
+    success, message = arduino_manager.update_thresholds_from_app(data)
+    
+    if success:
+        socketio.emit('thresholds_updated', arduino_manager.thresholds, broadcast=True)
+        return jsonify({"success": True, "message": message})
+    else:
+        return jsonify({"success": False, "message": message}), 500
+    
+    # Em app.py
+
+@app.route('/api/history', methods=['GET'])
+def get_history_data():
+    """
+    Endpoint para alimentar o gráfico com dados históricos (últimas 24h).
+    """
+    try:
+        # Busca dados das últimas 24 horas
+        history = get_readings_by_timerange(hours=24)
+
+        # Formata os dados para o Chart.js
+        # (O Chart.js prefere 'labels' e 'datasets' separados)
+        labels = []
+        temps = []
+        humids = []
+        soils = []
+        lights = []
+
+        # Para otimizar, podemos pegar apenas 1 a cada N pontos
+        # Ex: Se tiver 1000 pontos, só 100.
+        sample_rate = 1
+        if len(history) > 200: # Se tiver mais de 200 pontos
+            sample_rate = len(history) // 200 # Pega ~200 amostras
+
+        for i, reading in enumerate(history):
+            if i % sample_rate == 0:
+                labels.append(reading['timestamp'])
+                temps.append(reading['temperature'])
+                humids.append(reading['humidity'])
+                soils.append(reading['soil_moisture'])
+                lights.append(reading['light_level'])
+
+        return jsonify({
+            "success": True,
+            "labels": labels,
+            "datasets": [
+                {"label": "Temperatura", "data": temps},
+                {"label": "Umidade Ar", "data": humids},
+                {"label": "Umidade Solo", "data": soils},
+                {"label": "Luz", "data": lights}
+            ]
+        })
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
 # ==================== WEBSOCKET ====================
 
 @socketio.on('connect')
-def handle_connect():
-    """Cliente conectou"""
+def handle_connect(auth=None): # <<< MUDANÇA 1: Aceita o argumento 'auth'
     print(f"[WS] Cliente conectado: {request.sid}")
-    
-    # Envia dados atuais imediatamente
-    if arduino_manager and arduino_manager.last_sensor_data:
-        emit('sensor_data', arduino_manager.last_sensor_data)
-    
-    emit('connection_status', {
-        'connected': True,
-        'arduino1_status': 'connected' if arduino_manager and arduino_manager.arduino1 else 'disconnected',
-        'arduino2_status': 'connected' if arduino_manager and arduino_manager.arduino2 else 'disconnected'
+    # Envia status inicial
+    emit('status_update', {
+        # <<< MUDANÇA 2: Usa .ser1 e .ser2 (como o seu manager v2)
+        'arduino1_status': 'connected' if arduino_manager and arduino_manager.ser1 else 'disconnected',
+        'arduino2_status': 'connected' if arduino_manager and arduino_manager.ser2 else 'disconnected',
+        'thresholds': arduino_manager.thresholds if arduino_manager else {}
     })
 
 @socketio.on('disconnect')
@@ -264,22 +330,49 @@ def handle_send_command(data):
 # ==================== BACKGROUND ====================
 
 def background_tasks():
-    """Tasks em background - monitora conexão"""
-    reconnect_attempts = 0
-    
+    """Tarefas que correm em background (ex: limpar DB, enviar relatórios)"""
+
+    # Cria uma nova instância do RabbitMQ SÓ para esta thread
+    # Isto é mais seguro do que partilhar a do arduino_manager
+    rabbit_for_reports = RabbitMQManager()
+    if not rabbit_for_reports.connect():
+        print("✗ [BG-TASK] Falha ao conectar ao RabbitMQ para relatórios.")
+        rabbit_for_reports = None
+
+    last_report_time = time.time()
+    REPORT_INTERVAL = 1800 # 4 horas (em segundos)
+
     while True:
-        time.sleep(30)  # Verifica a cada 30s
-        
-        global arduino_connected
-        
-        if not arduino_connected and reconnect_attempts < 10:
-            print(f"[BG] Tentativa de reconexão {reconnect_attempts + 1}/10...")
-            if init_arduinos():
-                reconnect_attempts = 0
-                print("[BG] ✓ Reconectado!")
-            else:
-                reconnect_attempts += 1
-                print(f"[BG] ✗ Falha. Próxima tentativa em 30s...")
+        now = time.time()
+
+        # --- TAREFA 1: Enviar Relatório de Média ---
+        if rabbit_for_reports and (now - last_report_time > REPORT_INTERVAL):
+            try:
+                stats = get_statistics() # Função do database.py
+                if stats:
+                    message = (
+                        f"Resumo das últimas 24h:\n"
+                        f"  🌡️ Temp Média: {stats['avg_temp']:.1f}°C\n"
+                        f"  💧 Solo Médio: {stats['avg_soil']:.0f}%\n"
+                        f"  💨 Ar Médio: {stats['avg_humidity']:.0f}%\n"
+                        f"  ☀️ Luz Média: {stats['avg_light']:.0f}%"
+                    )
+
+                    rabbit_for_reports.publish_alert({
+                        'type': 'average_report', # Novo tipo
+                        'message': message,
+                        'severity': 'info' # Não é 'critical'
+                    })
+                    print(f"✓ [RABBITMQ] Relatório de médias enviado.")
+
+                last_report_time = now
+            except Exception as e:
+                print(f"✗ [RABBITMQ] Erro ao enviar relatório de médias: {e}")
+
+        # --- TAREFA 2: Limpar DB Antigo ---
+        # (Pode adicionar a sua lógica de limpar o DB antigo aqui também)
+
+        time.sleep(60)
 
 # ==================== MAIN ====================
 

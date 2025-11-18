@@ -42,7 +42,8 @@ class DiscordNotificationWorker:
             'system_reconnected': '✅',
             'critical': '🚨',
             'warning': '⚠️',
-            'info': 'ℹ️'
+            'info': 'ℹ️',
+            'average_report': '📊'
         }
         
         # Cores para embeds (formato decimal)

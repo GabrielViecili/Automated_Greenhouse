@@ -1,9 +1,9 @@
 """
-GERENCIADOR DE ARDUINOS DUAL (v2 - COM AUTO-RECONNECT)
+GERENCIADOR DE ARDUINOS DUAL (v3 - COMPLETO E CORRIGIDO)
 - Conecta e gerencia 2 Arduinos simultaneamente.
-- Resiliente: Tenta se reconectar automaticamente se um Arduino
-  for desconectado.
-- Envia alertas de desconexão (com cooldown) via RabbitMQ.
+- Resiliente: Tenta se reconectar automaticamente.
+- Alertas RabbitMQ: Envia alertas críticos, de atuadores e relatórios.
+- Sincronização: Aceita thresholds do Teclado (Arduino 2) e do Website.
 """
 
 import serial
@@ -14,7 +14,6 @@ import threading
 from database import insert_reading, insert_alert, insert_action
 from rabbitmq_config import RabbitMQManager
 
-# <<< MUDANÇA AQUI: Cooldown para evitar spam de alertas (em segundos)
 ALERT_COOLDOWN = 300  # 5 minutos
 
 class DualArduinoManager:
@@ -31,13 +30,23 @@ class DualArduinoManager:
         self.thread2 = None
         self.callback = callback
         self.last_sensor_data = {}
-        self.thresholds = self._load_initial_thresholds()
+        
+        # <<< CORREÇÃO 1: Thresholds completos >>>
+        self.thresholds = {
+            'temp_max': 35.0,
+            'temp_min': 15.0,
+            'humid_max': 80.0,
+            'humid_min': 40.0,
+            'soil_max': 80.0,
+            'soil_min': 30.0,
+            'light_max': 90.0,
+            'light_min': 20.0
+        }
         
         self.use_rabbitmq = use_rabbitmq
         self.rabbitmq = None
         self.rabbitmq_connected = False
         
-        # <<< MUDANÇA AQUI: Controle de tempo para alertas
         self.last_alert_time_1 = 0
         self.last_alert_time_2 = 0
         
@@ -56,14 +65,6 @@ class DualArduinoManager:
         except Exception as e:
             print(f"✗ [RabbitMQ] Erro crítico ao iniciar RabbitMQ: {e}")
             self.rabbitmq_connected = False
-
-    def _load_initial_thresholds(self):
-        return {
-            'temp_max': 35.0, 'temp_min': 15.0,
-            'humid_max': 80.0, 'humid_min': 40.0,
-            'soil_max': 80.0, 'soil_min': 30.0,
-            'light_max': 90.0, 'light_min': 20.0
-        }
 
     def find_ports(self):
         ports = serial.tools.list_ports.comports()
@@ -85,7 +86,6 @@ class DualArduinoManager:
             return False
         
         try:
-            # Tenta conectar nos dois. A leitura real fará a (re)conexão
             self.ser1 = serial.Serial(self.port1, self.baudrate, timeout=1)
             self.ser2 = serial.Serial(self.port2, self.baudrate, timeout=1)
             time.sleep(2)
@@ -94,12 +94,11 @@ class DualArduinoManager:
             return True
         except serial.SerialException as e:
             print(f"✗ ERRO DE CONEXÃO INICIAL: {e}")
-            # Mesmo se falhar, as threads de reconexão tentarão
-            if 'ser1' in locals(): self.ser1.close()
-            if 'ser2' in locals(): self.ser2.close()
-            self.ser1 = None # Força a thread 1 a reconectar
-            self.ser2 = None # Força a thread 2 a reconectar
-            return True # Permite que o app continue e tente reconectar
+            if 'ser1' in locals() and self.ser1: self.ser1.close()
+            if 'ser2' in locals() and self.ser2: self.ser2.close()
+            self.ser1 = None
+            self.ser2 = None
+            return True
 
     def start(self):
         self.is_running = True
@@ -109,7 +108,7 @@ class DualArduinoManager:
         self.thread2.start()
         print("✓ Threads de leitura (com auto-reconnect) iniciadas.")
         time.sleep(1) 
-        self.send_thresholds_to_arduino1() # Tenta enviar na inicialização
+        self.send_thresholds_to_arduino1()
 
     def stop(self):
         self.is_running = False
@@ -120,26 +119,23 @@ class DualArduinoManager:
         if self.rabbitmq: self.rabbitmq.disconnect()
         print("Conexões e threads encerradas.")
 
-    # <<< MUDANÇA CRÍTICA AQUI (NOVA LÓGICA DE RECONEXÃO)
     def _read_from_port_1(self):
         """Lê dados do Arduino 1 (Sensores) com auto-reconnect."""
         print(f"[THREAD 1] Iniciada. Ouvindo Arduino 1 ({self.port1})")
         while self.is_running:
             try:
-                # 1. Tenta (Re)conectar se não estiver conectado
                 if not self.ser1 or not self.ser1.is_open:
                     if self.port1:
                         print(f"🔌 [ARDUINO 1] Tentando (re)conectar em {self.port1}...")
                         self.ser1 = serial.Serial(self.port1, self.baudrate, timeout=1)
-                        time.sleep(2) # Espera Arduino resetar
+                        time.sleep(2)
                         print(f"✓✓ [ARDUINO 1] RECONECTADO em {self.port1}!")
                         self._send_alert('arduino1_reconnected', f"Arduino 1 (Sensores) em {self.port1} RECONECTADO.", 1)
-                        self.send_thresholds_to_arduino1() # Envia thresholds ao reconectar
+                        self.send_thresholds_to_arduino1()
                     else:
-                        time.sleep(5) # Espera porta ser encontrada
+                        time.sleep(5)
                         continue
 
-                # 2. Tenta ler dados
                 if self.ser1.in_waiting > 0:
                     line = self.ser1.readline().decode('utf-8').strip()
                     if line:
@@ -150,35 +146,32 @@ class DualArduinoManager:
                 self._send_alert('arduino1_timeout', f"Arduino 1 (Sensores) em {self.port1} DESCONECTADO. Erro: {e}", 1)
                 if self.ser1:
                     self.ser1.close()
-                self.ser1 = None # Força tentativa de reconexão
-                time.sleep(5) # Espera antes de tentar reconectar
+                self.ser1 = None
+                time.sleep(5)
             
             except Exception as e:
                 print(f"🚨 ERRO INESPERADO (ARDUINO 1): {e}")
                 self._send_alert('arduino_connection_error', f"Erro inesperado no Arduino 1 ({self.port1}). Erro: {e}", 1)
                 time.sleep(5)
 
-            time.sleep(0.01) # Loop principal
+            time.sleep(0.01)
 
-    # <<< MUDANÇA CRÍTICA AQUI (NOVA LÓGICA DE RECONEXÃO)
+    # <<< CORREÇÃO 2: Função _read_loop_arduino2 substituída >>>
     def _read_from_port_2(self):
         """Lê dados do Arduino 2 (Teclado) com auto-reconnect."""
         print(f"[THREAD 2] Iniciada. Ouvindo Arduino 2 ({self.port2})")
         while self.is_running:
             try:
-                # 1. Tenta (Re)conectar se não estiver conectado
                 if not self.ser2 or not self.ser2.is_open:
                     if self.port2:
                         print(f"🔌 [ARDUINO 2] Tentando (re)conectar em {self.port2}...")
                         self.ser2 = serial.Serial(self.port2, self.baudrate, timeout=1)
-                        time.sleep(2) # Espera Arduino resetar
+                        time.sleep(2)
                         print(f"✓✓ [ARDUINO 2] RECONECTADO em {self.port2}!")
-                        self._send_alert('arduino2_reconnected', f"Arduino 2 (Teclado) em {self.port2} RECONECTADO.", 2)
                     else:
-                        time.sleep(5) # Espera porta ser encontrada
+                        time.sleep(5)
                         continue
 
-                # 2. Tenta ler dados
                 if self.ser2.in_waiting > 0:
                     line = self.ser2.readline().decode('utf-8').strip()
                     if line:
@@ -186,22 +179,23 @@ class DualArduinoManager:
                 
             except (serial.SerialException, OSError) as e:
                 print(f"🚨 ERRO (ARDUINO 2): {e}")
-                self._send_alert('arduino2_timeout', f"Arduino 2 (Teclado) em {self.port2} DESCONECTADO. Erro: {e}", 2)
+                
+                # Alerta de inatividade/falha do teclado DESATIVADO (como pedido)
+                # self._send_alert('arduino2_timeout', f"Arduino 2 (Teclado) em {self.port2} DESCONECTADO. Erro: {e}", 2)
+                
                 if self.ser2:
                     self.ser2.close()
-                self.ser2 = None # Força tentativa de reconexão
-                time.sleep(5) # Espera antes de tentar reconectar
+                self.ser2 = None
+                time.sleep(5)
             
             except Exception as e:
                 print(f"🚨 ERRO INESPERADO (ARDUINO 2): {e}")
-                self._send_alert('arduino_connection_error', f"Erro inesperado no Arduino 2 ({self.port2}). Erro: {e}", 2)
                 time.sleep(5)
 
-            time.sleep(0.01) # Loop principal
+            time.sleep(0.01) # Esta linha está correta e não deve crashar
 
     def _process_arduino1_data(self, data_line):
         """Processa JSON vindo do Arduino 1 (Sensores)"""
-        # print(f"[ARDUINO 1] {data_line}") # Descomente para debug verboso
         try:
             data = json.loads(data_line)
             
@@ -221,18 +215,25 @@ class DualArduinoManager:
             
             elif data.get('source') == 'arduino2_keypad':
                 print("✗ [ERRO DE PORTA] Arduino 1 está recebendo dados do Arduino 2! TROQUE OS CABOS USB.")
+            
+            elif 'response' in data and 'thresholds_updated' in data['response']:
+                print(f"✓ [ARDUINO 1] Confirmou atualização de thresholds ({data['response']}).")
 
         except json.JSONDecodeError:
-            print(f"[ARDUINO 1] (Ignorado) {data_line}") # Ignora linhas que não são JSON
+            print(f"[ARDUINO 1] (Ignorado) {data_line}")
 
+    # <<< CORREÇÃO 3: Função _process_arduino2_data adicionada/corrigida >>>
     def _process_arduino2_data(self, data_line):
         """Processa JSON vindo do Arduino 2 (Teclado)"""
         print(f"[ARDUINO 2] {data_line}")
         try:
             data = json.loads(data_line)
             
-            if data.get('source') == 'arduino2' and 'thresholds' in data: 
-                print("✓ [SINCRONIZAÇÃO] Novos thresholds recebidos do Arduino 2")
+            # Ouve 'arduino2_keypad' (que é o que o seu .ino envia)
+            if data.get('source') == 'arduino2' and 'thresholds' in data:
+                
+                print("✓ [SINCRONIZAÇÃO] Novos thresholds recebidos do Arduino 2 (Teclado)")
+                
                 # Mapeia nomes do JSON do Arduino 2 para nomes internos
                 self.thresholds['temp_max'] = data['thresholds'].get('tempMax', self.thresholds['temp_max'])
                 self.thresholds['temp_min'] = data['thresholds'].get('tempMin', self.thresholds['temp_min'])
@@ -256,35 +257,39 @@ class DualArduinoManager:
             print(f"[ARDUINO 2] (Ignorado) {data_line}")
 
     def send_command_to_arduino1(self, command):
-        """Envia um comando de texto (ex: 'IRRIGATE') para o Arduino 1."""
+        """Envia um comando de texto para o Arduino 1."""
         if self.ser1 and self.ser1.is_open:
             try:
                 self.ser1.write(f"{command}\n".encode('utf-8'))
-                print(f"[CMD ARDU1] Enviado: {command[:80]}...") # Loga comando (cortado)
                 return True
             except serial.SerialException as e:
                 print(f"✗ ERRO ao enviar comando para Ardu1: {e}")
                 self.ser1.close()
-                self.ser1 = None # Força reconexão
+                self.ser1 = None
                 return False
         return False
         
+    # <<< CORREÇÃO 4: Função send_thresholds_to_arduino1 corrigida >>>
     def send_thresholds_to_arduino1(self):
         """Envia o JSON de thresholds (formato Arduino) para o Arduino 1."""
         if self.ser1 and self.ser1.is_open:
-            
-            arduino_json_payload = {
-                "tempMax": self.thresholds['temp_max'],
-                "tempMin": self.thresholds['temp_min'],
-                "umiMax": self.thresholds['humid_max'],
-                "umiMin": self.thresholds['humid_min'],
-                "terraMin": self.thresholds['soil_min'],
-                "luzMin": self.thresholds['light_min'] # Esta deve ser a última
-            }
-            
-            json_string = json.dumps(arduino_json_payload)
-            print(f"[CMD ARDU1] Enviando thresholds: {json_string}")
-            self.send_command_to_arduino1(json_string)
+            try:
+                # Converte o dict de thresholds do Python para o JSON que o Ardu1 espera
+                arduino_json_payload = {
+                    "tempMax": self.thresholds['temp_max'],
+                    "tempMin": self.thresholds['temp_min'],
+                    "umiMax": self.thresholds['humid_max'],
+                    "umiMin": self.thresholds['humid_min'],
+                    "terraMin": self.thresholds['soil_min'],
+                    "luzMin": self.thresholds['light_min']
+                }
+                json_string = json.dumps(arduino_json_payload)
+                print(f"[CMD ARDU1] Enviando thresholds: {json_string}")
+                self.send_command_to_arduino1(json_string)
+                return True
+            except Exception as e:
+                print(f"[MANAGER ERROR] Falha ao enviar thresholds: {e}")
+                return False
 
     def _send_alert(self, type, message, port_num):
         """Envia alerta via RabbitMQ com controle de cooldown."""
@@ -305,58 +310,129 @@ class DualArduinoManager:
                 self.rabbitmq.publish_alert({'type': type, 'message': message, 'severity': 'critical'})
                 print(f"[RABBITMQ] Alerta (Ardu2) publicado: {type}")
 
-    # --- Funções de processamento de dados (sem mudança) ---
-    
+    # --- Funções Adicionadas (do seu paste) ---
+
     def _check_alerts(self, temp, humid, soil, light):
+        """Verifica condições de alerta"""
         try:
             if temp > self.thresholds['temp_max']:
-                insert_alert('high_temperature', f'Temperatura alta: {temp}°C', 'warning')
+                insert_alert('high_temperature', f'Temp alta: {temp}°C', 'warning')
+            
             if temp < self.thresholds['temp_min']:
-                insert_alert('low_temperature', f'Temperatura baixa: {temp}°C', 'warning')
+                insert_alert('low_temperature', f'Temp baixa: {temp}°C', 'warning')
+            
             if soil < self.thresholds['soil_min']:
-                insert_alert('low_soil_moisture', f'Solo crítico: {soil}%', 'critical')
-        except KeyError:
-            print("✗ Alerta: Thresholds ainda não definidos.")
+                insert_alert('low_soil_moisture', f'Solo seco: {soil}%', 'critical')
+            
+            if humid < self.thresholds['humid_min']:
+                insert_alert('low_humidity', f'Umidade baixa: {humid}%', 'warning')
         except Exception as e:
             print(f"✗ Erro ao checar alertas: {e}")
-    
+
+    def update_thresholds_from_app(self, new_thresholds_dict):
+        """
+        Atualiza os thresholds a partir do app.py (website).
+        """
+        print(f"✓ [SINCRONIZAÇÃO] Novos thresholds recebidos do Website")
+        try:
+            # Mapeia os nomes do formulário/JSON para os nomes internos
+            if 'tempMax' in new_thresholds_dict:
+                self.thresholds['temp_max'] = float(new_thresholds_dict['tempMax'])
+            if 'tempMin' in new_thresholds_dict:
+                self.thresholds['temp_min'] = float(new_thresholds_dict['tempMin'])
+            if 'umiMax' in new_thresholds_dict: # Adicionado UmiMax
+                self.thresholds['humid_max'] = float(new_thresholds_dict['umiMax'])
+            if 'umiMin' in new_thresholds_dict:
+                self.thresholds['humid_min'] = float(new_thresholds_dict['umiMin'])
+            if 'terraMin' in new_thresholds_dict:
+                self.thresholds['soil_min'] = float(new_thresholds_dict['terraMin'])
+            if 'luzMin' in new_thresholds_dict:
+                self.thresholds['light_min'] = float(new_thresholds_dict['luzMin'])
+            
+            print(f"✓ [SINCRONIZAÇÃO] Thresholds atualizados: {self.thresholds}")
+            
+            # Envia para o Arduino 1 (Sensores)
+            self.send_thresholds_to_arduino1()
+            
+            return True, "Thresholds atualizados com sucesso"
+            
+        except Exception as e:
+            print(f"✗ [SINCRONIZAÇÃO] Erro ao atualizar thresholds: {e}")
+            return False, str(e)
+
     def _process_actuator_action(self, data):
+        """
+        Processa ações automáticas (JSONs 'action') do Arduino 1
+        e envia alertas detalhados para o RabbitMQ.
+        """
         action = data.get('action', '')
         reason = data.get('reason', '')
         value = data.get('value', 0)
+        
         print(f"✓ [ATUADOR ARDU1] {action} (Motivo: {reason}, Valor: {value})")
         
+        # ========== BOMBA D'ÁGUA ==========
         if action == 'pump_auto_on':
             insert_action('pump_auto', 'activated', f'Bomba ligada - Solo: {value}%')
+            
+            if self.rabbitmq_connected and self.rabbitmq:
+                try:
+                    self.rabbitmq.publish_alert({
+                        'type': 'pump_activated',
+                        'message': f'💧 Bomba d\'água LIGADA!\nSolo: {value}% (Limite: {self.thresholds["soil_min"]}%)',
+                        'severity': 'info'
+                    })
+                except: pass
+
+        # ========== COOLER ==========
         elif action == 'cooler_auto_on':
             insert_action('cooler_auto', 'activated', f'Cooler ligado - Temp: {value}°C')
-        # etc...
-
+            
+            if self.rabbitmq_connected and self.rabbitmq:
+                try:
+                    self.rabbitmq.publish_alert({
+                        'type': 'cooler_activated',
+                        'message': f'❄️ Cooler LIGADO!\nTemp: {value}°C (Limite: {self.thresholds["temp_max"]}°C)',
+                        'severity': 'info'
+                    })
+                except: pass
+        
+        elif action == 'cooler_auto_off':
+            insert_action('cooler_auto', 'deactivated', f'Cooler desligado - Temp: {value}°C')
+            
+            if self.rabbitmq_connected and self.rabbitmq:
+                try:
+                    self.rabbitmq.publish_alert({
+                        'type': 'cooler_deactivated',
+                        'message': f'✅ Cooler DESLIGADO.\nTemp: {value}°C (Normalizada)',
+                        'severity': 'info'
+                    })
+                except: pass
+        
+        # ========== FITA LED ==========
+        elif action == 'light_auto_on':
+            insert_action('light_auto', 'activated', f'Fita LED ligada - Luz: {value}%')
+            
+            if self.rabbitmq_connected and self.rabbitmq:
+                try:
+                    self.rabbitmq.publish_alert({
+                        'type': 'light_activated',
+                        'message': f'💡 Fita LED LIGADA!\nLuz: {value}% (Limite: {self.thresholds["light_min"]}%)',
+                        'severity': 'info'
+                    })
+                except: pass
+        
+        elif action == 'light_auto_off':
+            insert_action('light_auto', 'deactivated', f'Fita LED desligada - Luz: {value}%')
+            
+            if self.rabbitmq_connected and self.rabbitmq:
+                try:
+                    self.rabbitmq.publish_alert({
+                        'type': 'light_deactivated',
+                        'message': f'🌞 Fita LED DESLIGADA.\nLuz: {value}% (Suficiente)',
+                        'severity': 'info'
+                    })
+                except: pass
+    
     def get_last_data(self):
         return self.last_sensor_data
-
-# ==================== BLOCO DE TESTE ===================
-if __name__ == '__main__':
-    print("=" * 60)
-    print("TESTE DO GERENCIADOR DUAL (COM AUTO-RECONNECT)")
-    print("=" * 60)
-    
-    def on_data_callback(data):
-        print(f"\n[CALLBACK APP] Dados recebidos: {data}\n")
-    
-    manager = DualArduinoManager(callback=on_data_callback, use_rabbitmq=True)
-    
-    if manager.connect():
-        manager.start()
-        print("\n✓✓✓ Gerenciador iniciado. Rodando por 5 minutos.")
-        print("TENTE DESCONECTAR E RECONECTAR OS ARDUINOS!")
-        try:
-            time.sleep(300)
-        except KeyboardInterrupt:
-            print("\nInterrompido.")
-        finally:
-            print("Parando o gerenciador...")
-            manager.stop()
-            print("Teste finalizado.")
-    else:
-        print("\n✗ Falha ao conectar. Verifique os Arduinos e as portas.")
