@@ -69,7 +69,29 @@
             width: 100%;
         }
         #thresholdsForm button:hover { background: #5a6fd0; }
-        #formStatus { margin-top: 10px; font-weight: bold; }
+        #thresholdsForm button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        #formStatus { 
+            margin-top: 10px; 
+            font-weight: bold;
+            padding: 10px;
+            border-radius: 5px;
+            text-align: center;
+        }
+        #formStatus.success {
+            background: #d4edda;
+            color: #155724;
+        }
+        #formStatus.error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        #formStatus.loading {
+            background: #fff3cd;
+            color: #856404;
+        }
 
         /* Estilos dos Alertas */
         .alert-item { padding: 10px; border-radius: 5px; margin-bottom: 10px; }
@@ -144,7 +166,7 @@
                             <input type="number" id="luzMin" name="luzMin" placeholder="Ex: 20">
                         </div>
                     </div>
-                    <button type="submit">Guardar e Sincronizar</button>
+                    <button type="submit" id="submitBtn">Guardar e Sincronizar</button>
                     <div id="formStatus"></div>
                 </form>
             </div>
@@ -167,6 +189,8 @@
 
         // --- 1. LIDAR COM DADOS EM TEMPO REAL ---
         socket.on('sensor_data', function(data) {
+            console.log('Dados recebidos:', data);
+            
             // Atualiza os cartões
             document.getElementById('tempValue').textContent = `${data.temp.toFixed(1)} °C`;
             document.getElementById('humidValue').textContent = `${data.humid.toFixed(0)} %`;
@@ -187,7 +211,7 @@
                     sensorsChart.data.labels.shift();
                     sensorsChart.data.datasets.forEach(dataset => dataset.data.shift());
                 }
-                sensorsChart.update('none'); // 'none' para não piscar
+                sensorsChart.update('none');
             }
         });
 
@@ -208,7 +232,10 @@
                         </div>
                     `).join('');
                 })
-                .catch(err => console.error('Erro ao carregar alertas:', err));
+                .catch(err => {
+                    console.error('Erro ao carregar alertas:', err);
+                    document.getElementById('alertsList').innerHTML = '<p style="color: #f44336;">Erro ao carregar alertas</p>';
+                });
         }
 
         // --- 3. INICIAR O GRÁFICO (COM HISTÓRICO) ---
@@ -218,7 +245,7 @@
             sensorsChart = new Chart(ctx, {
                 type: 'line',
                 data: {
-                    labels: [], // Começa vazio
+                    labels: [],
                     datasets: [
                         { label: 'Temperatura', data: [], borderColor: 'red', tension: 0.1, yAxisID: 'yTemp' },
                         { label: 'Umidade Ar', data: [], borderColor: 'blue', tension: 0.1, yAxisID: 'yPercent' },
@@ -230,14 +257,13 @@
                     responsive: true,
                     maintainAspectRatio: false,
                     scales: {
-                        x: { ticks: { display: false } }, // Esconde labels do eixo X
+                        x: { ticks: { display: false } },
                         yPercent: { type: 'linear', position: 'left', min: 0, max: 100, title: { display: true, text: 'Percentual (%)' } },
                         yTemp: { type: 'linear', position: 'right', title: { display: true, text: 'Temperatura (°C)' }, grid: { drawOnChartArea: false } }
                     }
                 }
             });
             
-            // Vai buscar os dados históricos assim que o gráfico é criado
             loadChartHistory();
         }
 
@@ -253,7 +279,7 @@
                     sensorsChart.data.datasets[1].data = data.datasets.find(d => d.label === 'Umidade Ar').data;
                     sensorsChart.data.datasets[2].data = data.datasets.find(d => d.label === 'Umidade Solo').data;
                     sensorsChart.data.datasets[3].data = data.datasets.find(d => d.label === 'Luz').data;
-                    sensorsChart.update(); // Atualiza o gráfico com os dados
+                    sensorsChart.update();
                     console.log("Histórico do gráfico carregado.");
                 }
             } catch (err) {
@@ -261,57 +287,95 @@
             }
         }
 
-        // --- 5. LIDAR COM O FORMULÁRIO DE THRESHOLDS ---
+        // --- 5. LIDAR COM O FORMULÁRIO DE THRESHOLDS (CORRIGIDO) ---
         function initThresholdForm() {
-            document.getElementById('thresholdsForm').addEventListener('submit', function(e) {
-                e.preventDefault(); // Impede o recarregamento da página
+            const form = document.getElementById('thresholdsForm');
+            const statusEl = document.getElementById('formStatus');
+            const submitBtn = document.getElementById('submitBtn');
+            
+            form.addEventListener('submit', async function(e) {
+                e.preventDefault();
                 
+                // Desabilita botão
+                submitBtn.disabled = true;
+                
+                // Coleta dados do formulário
                 const formData = new FormData(e.target);
                 const data = {};
                 
-                // Constrói o objeto JSON, mas só inclui campos que foram preenchidos
-                if (formData.get('tempMax')) data.tempMax = formData.get('tempMax');
-                if (formData.get('tempMin')) data.tempMin = formData.get('tempMin');
-                if (formData.get('umiMin')) data.umiMin = formData.get('umiMin');
-                if (formData.get('terraMin')) data.terraMin = formData.get('terraMin');
-                if (formData.get('luzMin')) data.luzMin = formData.get('luzMin');
+                // Constrói o objeto JSON (só inclui campos preenchidos)
+                if (formData.get('tempMax')) data.tempMax = parseFloat(formData.get('tempMax'));
+                if (formData.get('tempMin')) data.tempMin = parseFloat(formData.get('tempMin'));
+                if (formData.get('umiMin')) data.umiMin = parseFloat(formData.get('umiMin'));
+                if (formData.get('terraMin')) data.terraMin = parseFloat(formData.get('terraMin'));
+                if (formData.get('luzMin')) data.luzMin = parseFloat(formData.get('luzMin'));
 
-                const statusEl = document.getElementById('formStatus');
+                // Valida se pelo menos um campo foi preenchido
+                if (Object.keys(data).length === 0) {
+                    statusEl.textContent = 'Erro: Preencha pelo menos um campo!';
+                    statusEl.className = 'error';
+                    submitBtn.disabled = false;
+                    return;
+                }
+
+                // Mostra status de carregamento
                 statusEl.textContent = 'A guardar...';
-                statusEl.style.color = '#ffa500';
+                statusEl.className = 'loading';
 
-                fetch('/api/thresholds', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(data)
-                })
-                .then(res => res.json())
-                .then(response => {
-                    if (response.success) {
-                        statusEl.textContent = 'Sucesso! Limites sincronizados.';
-                        statusEl.style.color = '#4caf50';
+                try {
+                    const response = await fetch('/api/thresholds', {
+                        method: 'POST',
+                        headers: { 
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(data)
+                    });
+
+                    const result = await response.json();
+
+                    if (response.ok && result.success) {
+                        statusEl.textContent = '✅ Sucesso! Limites sincronizados.';
+                        statusEl.className = 'success';
+                        
+                        // Limpa formulário após 2s
+                        setTimeout(() => {
+                            form.reset();
+                            statusEl.textContent = '';
+                            statusEl.className = '';
+                        }, 3000);
                     } else {
-                        statusEl.textContent = 'Erro: ' + response.message;
-                        statusEl.style.color = '#f44336';
+                        throw new Error(result.message || 'Erro desconhecido');
                     }
-                })
-                .catch(err => {
-                    console.error('Erro:', err);
-                    statusEl.textContent = 'Erro de rede.';
-                    statusEl.style.color = '#f44336';
-                });
+                } catch (err) {
+                    console.error('Erro ao enviar thresholds:', err);
+                    statusEl.textContent = `❌ Erro: ${err.message}`;
+                    statusEl.className = 'error';
+                } finally {
+                    submitBtn.disabled = false;
+                }
             });
         }
         
-        // --- INICIALIZAÇÃO CORRETA ---
-        // Espera o HTML carregar, depois corre todas as funções de inicialização
+        // --- INICIALIZAÇÃO ---
         document.addEventListener('DOMContentLoaded', () => {
-            initChart();        // 1. Cria o gráfico
-            initThresholdForm(); // 2. Ativa o formulário
-            loadAlerts();       // 3. Carrega os alertas
-            setInterval(loadAlerts, 30000); // 4. Define o "refresh" dos alertas
+            console.log('Dashboard iniciado');
+            
+            initChart();
+            initThresholdForm();
+            loadAlerts();
+            
+            // Atualiza alertas a cada 30s
+            setInterval(loadAlerts, 30000);
+            
+            // Log de conexão WebSocket
+            socket.on('connect', () => {
+                console.log('✅ WebSocket conectado');
+            });
+            
+            socket.on('disconnect', () => {
+                console.log('❌ WebSocket desconectado');
+            });
         });
-
     </script>
 </body>
 </html>
