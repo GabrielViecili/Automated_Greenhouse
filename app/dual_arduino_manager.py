@@ -1,11 +1,3 @@
-"""
-GERENCIADOR DE ARDUINOS DUAL (v3 - COMPLETO E CORRIGIDO)
-- Conecta e gerencia 2 Arduinos simultaneamente.
-- Resiliente: Tenta se reconectar automaticamente.
-- Alertas RabbitMQ: Envia alertas críticos, de atuadores e relatórios.
-- Sincronização: Aceita thresholds do Teclado (Arduino 2) e do Website.
-"""
-
 import serial
 import serial.tools.list_ports
 import json
@@ -14,7 +6,7 @@ import threading
 from database import insert_reading, insert_alert, insert_action
 from rabbitmq_config import RabbitMQManager
 
-ALERT_COOLDOWN = 300  # 5 minutos
+ALERT_COOLDOWN = 300  
 
 class DualArduinoManager:
     """Gerencia a comunicação serial com dois Arduinos (com auto-reconnect)."""
@@ -31,7 +23,6 @@ class DualArduinoManager:
         self.callback = callback
         self.last_sensor_data = {}
         
-        # <<< CORREÇÃO 1: Thresholds completos >>>
         self.thresholds = {
             'temp_max': 35.0,
             'temp_min': 15.0,
@@ -156,7 +147,6 @@ class DualArduinoManager:
 
             time.sleep(0.01)
 
-    # <<< CORREÇÃO 2: Função _read_loop_arduino2 substituída >>>
     def _read_from_port_2(self):
         """Lê dados do Arduino 2 (Teclado) com auto-reconnect."""
         print(f"[THREAD 2] Iniciada. Ouvindo Arduino 2 ({self.port2})")
@@ -180,9 +170,6 @@ class DualArduinoManager:
             except (serial.SerialException, OSError) as e:
                 print(f"🚨 ERRO (ARDUINO 2): {e}")
                 
-                # Alerta de inatividade/falha do teclado DESATIVADO (como pedido)
-                # self._send_alert('arduino2_timeout', f"Arduino 2 (Teclado) em {self.port2} DESCONECTADO. Erro: {e}", 2)
-                
                 if self.ser2:
                     self.ser2.close()
                 self.ser2 = None
@@ -192,7 +179,7 @@ class DualArduinoManager:
                 print(f"🚨 ERRO INESPERADO (ARDUINO 2): {e}")
                 time.sleep(5)
 
-            time.sleep(0.01) # Esta linha está correta e não deve crashar
+            time.sleep(0.01)
 
     def _process_arduino1_data(self, data_line):
         """Processa JSON vindo do Arduino 1 (Sensores)"""
@@ -222,19 +209,16 @@ class DualArduinoManager:
         except json.JSONDecodeError:
             print(f"[ARDUINO 1] (Ignorado) {data_line}")
 
-    # <<< CORREÇÃO 3: Função _process_arduino2_data adicionada/corrigida >>>
     def _process_arduino2_data(self, data_line):
         """Processa JSON vindo do Arduino 2 (Teclado)"""
         print(f"[ARDUINO 2] {data_line}")
         try:
             data = json.loads(data_line)
             
-            # Ouve 'arduino2_keypad' (que é o que o seu .ino envia)
             if data.get('source') == 'arduino2' and 'thresholds' in data:
                 
                 print("✓ [SINCRONIZAÇÃO] Novos thresholds recebidos do Arduino 2 (Teclado)")
                 
-                # Mapeia nomes do JSON do Arduino 2 para nomes internos
                 self.thresholds['temp_max'] = data['thresholds'].get('tempMax', self.thresholds['temp_max'])
                 self.thresholds['temp_min'] = data['thresholds'].get('tempMin', self.thresholds['temp_min'])
                 self.thresholds['humid_max'] = data['thresholds'].get('umiMax', self.thresholds['humid_max'])
@@ -244,7 +228,6 @@ class DualArduinoManager:
                 
                 print(f"✓ [SINCRONIZAÇÃO] Thresholds atualizados: {self.thresholds}")
                 
-                # Repassa para o Arduino 1 (Sensores)
                 self.send_thresholds_to_arduino1()
                 
             elif 'status' in data and data['status'] == 'arduino2_ready':
@@ -269,12 +252,10 @@ class DualArduinoManager:
                 return False
         return False
         
-    # <<< CORREÇÃO 4: Função send_thresholds_to_arduino1 corrigida >>>
     def send_thresholds_to_arduino1(self):
         """Envia o JSON de thresholds (formato Arduino) para o Arduino 1."""
         if self.ser1 and self.ser1.is_open:
             try:
-                # Converte o dict de thresholds do Python para o JSON que o Ardu1 espera
                 arduino_json_payload = {
                     "tempMax": self.thresholds['temp_max'],
                     "tempMin": self.thresholds['temp_min'],
@@ -310,8 +291,6 @@ class DualArduinoManager:
                 self.rabbitmq.publish_alert({'type': type, 'message': message, 'severity': 'critical'})
                 print(f"[RABBITMQ] Alerta (Ardu2) publicado: {type}")
 
-    # --- Funções Adicionadas (do seu paste) ---
-
     def _check_alerts(self, temp, humid, soil, light):
         """Verifica condições de alerta"""
         try:
@@ -335,12 +314,11 @@ class DualArduinoManager:
         """
         print(f"✓ [SINCRONIZAÇÃO] Novos thresholds recebidos do Website")
         try:
-            # Mapeia os nomes do formulário/JSON para os nomes internos
             if 'tempMax' in new_thresholds_dict:
                 self.thresholds['temp_max'] = float(new_thresholds_dict['tempMax'])
             if 'tempMin' in new_thresholds_dict:
                 self.thresholds['temp_min'] = float(new_thresholds_dict['tempMin'])
-            if 'umiMax' in new_thresholds_dict: # Adicionado UmiMax
+            if 'umiMax' in new_thresholds_dict:
                 self.thresholds['humid_max'] = float(new_thresholds_dict['umiMax'])
             if 'umiMin' in new_thresholds_dict:
                 self.thresholds['humid_min'] = float(new_thresholds_dict['umiMin'])
@@ -351,7 +329,6 @@ class DualArduinoManager:
             
             print(f"✓ [SINCRONIZAÇÃO] Thresholds atualizados: {self.thresholds}")
             
-            # Envia para o Arduino 1 (Sensores)
             self.send_thresholds_to_arduino1()
             
             return True, "Thresholds atualizados com sucesso"
@@ -370,8 +347,7 @@ class DualArduinoManager:
         value = data.get('value', 0)
         
         print(f"✓ [ATUADOR ARDU1] {action} (Motivo: {reason}, Valor: {value})")
-        
-        # ========== BOMBA D'ÁGUA ==========
+
         if action == 'pump_auto_on':
             insert_action('pump_auto', 'activated', f'Bomba ligada - Solo: {value}%')
             
@@ -384,7 +360,6 @@ class DualArduinoManager:
                     })
                 except: pass
 
-        # ========== COOLER ==========
         elif action == 'cooler_auto_on':
             insert_action('cooler_auto', 'activated', f'Cooler ligado - Temp: {value}°C')
             
@@ -408,8 +383,7 @@ class DualArduinoManager:
                         'severity': 'info'
                     })
                 except: pass
-        
-        # ========== FITA LED ==========
+
         elif action == 'light_auto_on':
             insert_action('light_auto', 'activated', f'Fita LED ligada - Luz: {value}%')
             

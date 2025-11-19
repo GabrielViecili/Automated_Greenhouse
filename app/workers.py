@@ -1,8 +1,3 @@
-"""
-WORKER DE NOTIFICAÇÕES - APENAS DISCORD
-Execute: python workers.py
-"""
-
 import sys
 import time
 import requests
@@ -16,12 +11,9 @@ class DiscordNotificationWorker:
     
     def __init__(self, webhook_url=None):
         self.rabbitmq = RabbitMQManager()
-        
-        # Configure seu Webhook do Discord aqui
-        # Tutorial: Discord > Server Settings > Integrations > Webhooks > New Webhook
+
         self.webhook_url = webhook_url or "https://discord.com/api/webhooks/1438969223572361237/pCmaG6YYOiYrFxqqMk9IXioB6VPt2TYx2q-AV0Yj8dhUTloUobbuh46m65ao35ayXOtV"
         
-        # Emojis para diferentes tipos de alerta
         self.emoji_map = {
             'arduino_connection_failed': '🔌',
             'arduino_connection_error': '❌',
@@ -46,11 +38,10 @@ class DiscordNotificationWorker:
             'average_report': '📊'
         }
         
-        # Cores para embeds (formato decimal)
         self.color_map = {
-            'critical': 16711680,  # Vermelho
-            'warning': 16776960,   # Amarelo
-            'info': 3447003        # Azul
+            'critical': 16711680,
+            'warning': 16776960,  
+            'info': 3447003        
         }
     
     def send_discord_notification(self, alert: Dict):
@@ -61,13 +52,10 @@ class DiscordNotificationWorker:
             severity = alert.get('severity', 'info')
             timestamp = alert.get('timestamp', '')
             
-            # Seleciona emoji
             emoji = self.emoji_map.get(alert_type, self.emoji_map.get(severity, '📢'))
             
-            # Seleciona cor
             color = self.color_map.get(severity, 3447003)
             
-            # Monta embed do Discord
             embed = {
                 "title": f"{emoji} Alerta do Sistema de Estufa",
                 "description": message,
@@ -94,13 +82,11 @@ class DiscordNotificationWorker:
                 }
             }
             
-            # Payload do webhook
             payload = {
                 "username": "Estufa Bot",
                 "embeds": [embed]
             }
             
-            # Envia para Discord
             response = requests.post(
                 self.webhook_url,
                 json=payload,
@@ -129,7 +115,6 @@ class DiscordNotificationWorker:
         print(f"Timestamp: {message.get('timestamp')}")
         print("=" * 60)
         
-        # Envia para Discord
         self.send_discord_notification(message)
     
     def start(self):
@@ -138,7 +123,6 @@ class DiscordNotificationWorker:
         print("WORKER DE NOTIFICAÇÕES DISCORD")
         print("=" * 60)
         
-        # Verifica webhook
         if self.webhook_url == "YOUR_DISCORD_WEBHOOK_URL_HERE":
             print("\n⚠️  ATENÇÃO: Configure o Webhook do Discord!")
             print("\n1. Vá para seu servidor Discord")
@@ -149,7 +133,6 @@ class DiscordNotificationWorker:
             print("   webhook_url = 'https://discord.com/api/webhooks/...'")
             print("\n" + "=" * 60)
             
-            # Continua mesmo assim (para testes)
         
         if self.rabbitmq.connect():
             print("✓ RabbitMQ conectado!")
@@ -165,7 +148,6 @@ class DiscordNotificationWorker:
             print("\nVerifique se o RabbitMQ está rodando:")
             print("  sudo systemctl status rabbitmq-server")
 
-# ==================== TESTE ====================
 
 def test_discord_webhook(webhook_url):
     """Testa o webhook do Discord"""
@@ -174,13 +156,12 @@ def test_discord_webhook(webhook_url):
     print("=" * 60)
     
     try:
-        # Envia mensagem de teste
         payload = {
             "username": "Estufa Bot - TESTE",
             "embeds": [{
                 "title": "🧪 Teste de Conexão",
                 "description": "Se você está vendo esta mensagem, o webhook está funcionando!",
-                "color": 3066993,  # Verde
+                "color": 3066993,
                 "fields": [
                     {
                         "name": "Status",
@@ -204,7 +185,6 @@ def test_discord_webhook(webhook_url):
         print(f"❌ Erro ao testar webhook: {e}")
         return False
 
-# ==================== MAIN ====================
 
 def main():
     if len(sys.argv) < 2:
@@ -229,7 +209,6 @@ Configurar Webhook:
     command = sys.argv[1].lower()
     
     if command == 'start':
-        # Webhook pode ser passado como argumento ou configurado no código
         webhook_url = sys.argv[2] if len(sys.argv) > 2 else None
         worker = DiscordNotificationWorker(webhook_url=webhook_url)
         worker.start()

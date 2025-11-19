@@ -9,7 +9,6 @@ def init_database():
     conn = sqlite3.connect(DATABASE_NAME)
     cursor = conn.cursor()
     
-    # Tabela de leituras dos sensores
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS readings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -21,7 +20,6 @@ def init_database():
         )
     ''')
     
-    # Tabela de alertas
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS alerts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -32,7 +30,6 @@ def init_database():
         )
     ''')
     
-    # Tabela de comandos/ações
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS actions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -175,15 +172,12 @@ def get_statistics():
         
         stats = {}
         
-        # Total de leituras
         cursor.execute('SELECT COUNT(*) FROM readings')
         stats['total_readings'] = cursor.fetchone()[0]
         
-        # Total de alertas
         cursor.execute('SELECT COUNT(*) FROM alerts')
         stats['total_alerts'] = cursor.fetchone()[0]
         
-        # Médias das últimas 24h
         cursor.execute('''
             SELECT 
                 AVG(temperature) as avg_temp,
@@ -228,11 +222,9 @@ def clear_old_data(days=30):
         return 0
 
 if __name__ == '__main__':
-    # Teste do banco de dados
     print("Inicializando banco de dados...")
     init_database()
     
-    # Inserir dados de teste
     print("Inserindo dados de teste...")
     insert_reading(25.5, 60.0, 45, 80)
     insert_alert('low_soil_moisture', 'Umidade do solo baixa', 'warning')

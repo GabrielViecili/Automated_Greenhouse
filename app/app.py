@@ -1,11 +1,3 @@
-"""
-SISTEMA DE ESTUFA INTELIGENTE - SERVIDOR PRINCIPAL
-VERSÃO TOTALMENTE CORRIGIDA
-- Broadcast fix (compatível com todas versões Flask-SocketIO)
-- Sensor de luz invertido corrigido
-- Thresholds funcionando
-"""
-
 from flask import Flask, render_template, jsonify, request
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -15,7 +7,6 @@ import threading
 import time
 import traceback
 
-# Importações locais
 from database import (
     init_database, 
     insert_reading,
@@ -44,16 +35,13 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = 'greenhouse_secret_2025'
 CORS(app)
 
-# ⭐ CORREÇÃO: async_mode='threading' para evitar problemas de broadcast
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
-# Gerenciador global dos Arduinos
 arduino_manager = None
 arduino_connected = False
 
 def on_arduino_data(data):
     """Callback quando dados chegam do Arduino 1"""
-    # ⭐ CORREÇÃO: Usa namespace e room corretos
     socketio.emit('sensor_data', data, namespace='/')
     print(f"[WS] Dados emitidos: T:{data.get('temp')}°C H:{data.get('humid')}% S:{data.get('soil')}%")
 
@@ -233,7 +221,6 @@ def api_set_thresholds():
         
         print(f"[API] POST /api/thresholds recebido: {data}")
         
-        # Se não tiver Arduino, apenas registra no banco
         if not arduino_connected or not arduino_manager:
             print("[API] Sem Arduino - salvando apenas no banco")
             
@@ -250,13 +237,11 @@ def api_set_thresholds():
                 'note': 'Serão aplicados quando Arduinos conectarem'
             })
         
-        # Com Arduino - atualiza e sincroniza
         if hasattr(arduino_manager, 'update_thresholds_from_app'):
             success, message = arduino_manager.update_thresholds_from_app(data)
         else:
             print("[API] Método update_thresholds_from_app não existe - usando fallback")
             
-            # Atualiza manualmente
             if 'tempMax' in data:
                 arduino_manager.thresholds['temp_max'] = float(data['tempMax'])
             if 'tempMin' in data:
@@ -268,14 +253,12 @@ def api_set_thresholds():
             if 'luzMin' in data:
                 arduino_manager.thresholds['light_min'] = float(data['luzMin'])
             
-            # Tenta enviar para Arduino 1
             arduino_manager.send_thresholds_to_arduino1()
             
             success = True
             message = "Thresholds atualizados"
         
         if success:
-            # ⭐ CORREÇÃO: Emite sem broadcast keyword
             socketio.emit('thresholds_updated', arduino_manager.thresholds, namespace='/')
             
             return jsonify({

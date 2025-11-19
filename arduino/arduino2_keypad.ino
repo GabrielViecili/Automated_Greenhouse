@@ -1,27 +1,10 @@
-/*
- * ARDUINO 2 - CONFIGURAÇÃO VIA TECLADO
- * 
- * Conectado à Raspberry Pi via USB Serial
- * 
- * Hardware:
- * - Teclado Matricial 4x3
- * - LCD I2C 0x27
- * - EEPROM (armazena configurações)
- * 
- * Protocolo Serial:
- * ENVIA: JSON com thresholds configurados
- * RECEBE: Comandos da Raspberry Pi
- */
-
 #include <Keypad.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <EEPROM.h>
 
-// === LCD ===
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
-// === TECLADO ===
 const byte ROWS = 4;
 const byte COLS = 3;
 
@@ -37,7 +20,6 @@ const byte colPins[COLS] = {5, 3, 7};
 
 Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
 
-// === ENDEREÇOS EEPROM ===
 int addrTempMax = 0;
 int addrTempMin = 4;
 int addrUmiMax  = 8;
@@ -47,12 +29,7 @@ int addrLuzMin  = 20;
 int addrTerraMax = 24;
 int addrTerraMin = 28;
 
-// === VARIÁVEIS ===
 float tempMax, tempMin, umiMax, umiMin, luzMax, luzMin, terraMax, terraMin;
-
-// ========================================
-// FUNÇÕES EEPROM
-// ========================================
 
 void salvarFloat(int address, float value) {
   EEPROM.put(address, value);
@@ -64,10 +41,6 @@ float lerFloat(int address) {
   if (isnan(value)) return 0;
   return value;
 }
-
-// ========================================
-// LEITURA DE NÚMERO VIA TECLADO
-// ========================================
 
 float lerNumero(const char* mensagem) {
   String valor = "";
@@ -93,10 +66,6 @@ float lerNumero(const char* mensagem) {
   }
 }
 
-// ========================================
-// MOSTRA VALORES
-// ========================================
-
 void mostrarValores(const char* nome, float min, float max) {
   lcd.clear();
   lcd.print(nome);
@@ -106,10 +75,6 @@ void mostrarValores(const char* nome, float min, float max) {
   lcd.print(max, 1);
   delay(2000);
 }
-
-// ========================================
-// ENVIA THRESHOLDS VIA SERIAL
-// ========================================
 
 void enviarThresholds() {
   String json = "{\"source\":\"arduino2\",\"thresholds\":{";
@@ -126,17 +91,12 @@ void enviarThresholds() {
   Serial.println(json);
 }
 
-// ========================================
-// SETUP
-// ========================================
-
 void setup() {
   Serial.begin(9600);
   
   lcd.init();
   lcd.backlight();
 
-  // Lê valores da EEPROM
   tempMax = lerFloat(addrTempMax);
   tempMin = lerFloat(addrTempMin);
   umiMax = lerFloat(addrUmiMax);
@@ -146,7 +106,6 @@ void setup() {
   terraMax = lerFloat(addrTerraMax);
   terraMin = lerFloat(addrTerraMin);
   
-  // Valores padrão se EEPROM vazia
   if (tempMax == 0) { tempMax = 35.0; salvarFloat(addrTempMax, tempMax); }
   if (tempMin == 0) { tempMin = 15.0; salvarFloat(addrTempMin, tempMin); }
   if (umiMax == 0) { umiMax = 80.0; salvarFloat(addrUmiMax, umiMax); }
@@ -162,7 +121,6 @@ void setup() {
   lcd.print("Conectando...");
   delay(1500);
   
-  // Envia thresholds iniciais
   enviarThresholds();
   
   lcd.clear();
@@ -171,12 +129,7 @@ void setup() {
   lcd.print("*3 Luz  *4 Terra");
 }
 
-// ========================================
-// LOOP PRINCIPAL
-// ========================================
-
 void loop() {
-  // Processa comandos da Raspberry Pi
   if (Serial.available() > 0) {
     String cmd = Serial.readStringUntil('\n');
     cmd.trim();
@@ -186,17 +139,15 @@ void loop() {
     }
   }
   
-  // Processa teclado
   char tecla = keypad.getKey();
   if (!tecla) return;
 
-  // ========== CONFIGURAR (*1, *2, *3, *4) ==========
   if (tecla == '*') {
     char prox = 0;
     while (!prox) prox = keypad.getKey();
 
     switch (prox) {
-      case '1': { // Temperatura
+      case '1': { 
         float max = lerNumero("Temp MAX:");
         if (max != -1) { 
           tempMax = max; 
@@ -210,8 +161,7 @@ void loop() {
         }
 
         mostrarValores("Temp:", tempMin, tempMax);
-        
-        // Envia para Raspberry Pi
+
         enviarThresholds();
         
         lcd.clear();
@@ -220,7 +170,7 @@ void loop() {
         break;
       }
 
-      case '2': { // Umidade
+      case '2': {
         float max = lerNumero("Umi MAX:");
         if (max != -1) { 
           umiMax = max; 
@@ -264,7 +214,7 @@ void loop() {
         break;
       }
 
-      case '4': { // Terra
+      case '4': { 
         float max = lerNumero("Terra MAX:");
         if (max != -1) { 
           terraMax = max; 
@@ -299,7 +249,6 @@ void loop() {
     lcd.print("*3 Luz  *4 Terra");
   }
 
-  // ========== CONSULTAR (#1, #2, #3, #4) ==========
   if (tecla == '#') {
     char prox = 0;
     while (!prox) prox = keypad.getKey();

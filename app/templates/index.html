@@ -44,7 +44,6 @@
         .sensor-item .value { font-size: 2rem; font-weight: bold; }
         .sensor-item .label { color: #555; }
         
-        /* Estilos do Formulário */
         .form-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -93,7 +92,6 @@
             color: #856404;
         }
 
-        /* Estilos dos Alertas */
         .alert-item { padding: 10px; border-radius: 5px; margin-bottom: 10px; }
         .alert-item .timestamp { font-size: 0.8em; color: #666; }
         .alert-critical { background: #fbebee; border-left: 5px solid #f44336; }
@@ -181,23 +179,18 @@
     </div>
 
     <script>
-        // Variável global para o gráfico
         let sensorsChart;
 
-        // Conecta ao WebSocket
         const socket = io();
 
-        // --- 1. LIDAR COM DADOS EM TEMPO REAL ---
         socket.on('sensor_data', function(data) {
             console.log('Dados recebidos:', data);
             
-            // Atualiza os cartões
             document.getElementById('tempValue').textContent = `${data.temp.toFixed(1)} °C`;
             document.getElementById('humidValue').textContent = `${data.humid.toFixed(0)} %`;
             document.getElementById('soilValue').textContent = `${data.soil} %`;
             document.getElementById('lightValue').textContent = `${data.light} %`;
 
-            // Atualiza o gráfico (se ele já existir)
             if (sensorsChart) {
                 const label = new Date().toLocaleTimeString('pt-BR');
                 sensorsChart.data.labels.push(label);
@@ -206,7 +199,6 @@
                 sensorsChart.data.datasets[2].data.push(data.soil);
                 sensorsChart.data.datasets[3].data.push(data.light);
                 
-                // Limita o gráfico (ex: 100 pontos ao vivo)
                 if (sensorsChart.data.labels.length > 100) {
                     sensorsChart.data.labels.shift();
                     sensorsChart.data.datasets.forEach(dataset => dataset.data.shift());
@@ -215,7 +207,6 @@
             }
         });
 
-        // --- 2. CARREGAR ALERTAS ---
         function loadAlerts() {
             fetch('/api/alerts/latest?limit=5')
                 .then(res => res.json())
@@ -238,7 +229,6 @@
                 });
         }
 
-        // --- 3. INICIAR O GRÁFICO (COM HISTÓRICO) ---
         function initChart() {
             const ctx = document.getElementById('sensorsChart').getContext('2d');
             
@@ -267,7 +257,6 @@
             loadChartHistory();
         }
 
-        // --- 4. BUSCAR DADOS DO HISTÓRICO (API) ---
         async function loadChartHistory() {
             try {
                 const response = await fetch('/api/history');
@@ -287,7 +276,6 @@
             }
         }
 
-        // --- 5. LIDAR COM O FORMULÁRIO DE THRESHOLDS (CORRIGIDO) ---
         function initThresholdForm() {
             const form = document.getElementById('thresholdsForm');
             const statusEl = document.getElementById('formStatus');
@@ -296,21 +284,17 @@
             form.addEventListener('submit', async function(e) {
                 e.preventDefault();
                 
-                // Desabilita botão
                 submitBtn.disabled = true;
                 
-                // Coleta dados do formulário
                 const formData = new FormData(e.target);
                 const data = {};
                 
-                // Constrói o objeto JSON (só inclui campos preenchidos)
                 if (formData.get('tempMax')) data.tempMax = parseFloat(formData.get('tempMax'));
                 if (formData.get('tempMin')) data.tempMin = parseFloat(formData.get('tempMin'));
                 if (formData.get('umiMin')) data.umiMin = parseFloat(formData.get('umiMin'));
                 if (formData.get('terraMin')) data.terraMin = parseFloat(formData.get('terraMin'));
                 if (formData.get('luzMin')) data.luzMin = parseFloat(formData.get('luzMin'));
 
-                // Valida se pelo menos um campo foi preenchido
                 if (Object.keys(data).length === 0) {
                     statusEl.textContent = 'Erro: Preencha pelo menos um campo!';
                     statusEl.className = 'error';
@@ -318,7 +302,6 @@
                     return;
                 }
 
-                // Mostra status de carregamento
                 statusEl.textContent = 'A guardar...';
                 statusEl.className = 'loading';
 
@@ -337,7 +320,6 @@
                         statusEl.textContent = '✅ Sucesso! Limites sincronizados.';
                         statusEl.className = 'success';
                         
-                        // Limpa formulário após 2s
                         setTimeout(() => {
                             form.reset();
                             statusEl.textContent = '';
@@ -356,7 +338,6 @@
             });
         }
         
-        // --- INICIALIZAÇÃO ---
         document.addEventListener('DOMContentLoaded', () => {
             console.log('Dashboard iniciado');
             
@@ -364,10 +345,8 @@
             initThresholdForm();
             loadAlerts();
             
-            // Atualiza alertas a cada 30s
             setInterval(loadAlerts, 30000);
             
-            // Log de conexão WebSocket
             socket.on('connect', () => {
                 console.log('✅ WebSocket conectado');
             });

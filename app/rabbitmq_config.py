@@ -1,12 +1,3 @@
-"""
-RABBITMQ - APENAS PARA ALERTAS CRÍTICOS
-- Falhas de conexão com Arduinos
-- Timeout de sensores
-- Erros críticos do sistema
-
-NÃO é usado para dados normais (isso fica no WebSocket + SQLite)
-"""
-
 import pika
 import json
 from datetime import datetime
@@ -28,7 +19,6 @@ class RabbitMQManager:
         self.connection = None
         self.channel = None
         
-        # Apenas 1 exchange e 1 fila (simplificado)
         self.exchange_name = 'greenhouse.critical_alerts'
         self.queue_name = 'queue.critical_alerts'
     
@@ -46,20 +36,17 @@ class RabbitMQManager:
             self.connection = pika.BlockingConnection(params)
             self.channel = self.connection.channel()
             
-            # Declara exchange
             self.channel.exchange_declare(
                 exchange=self.exchange_name,
                 exchange_type='topic',
                 durable=True
             )
             
-            # Declara fila
             self.channel.queue_declare(
                 queue=self.queue_name,
                 durable=True
             )
             
-            # Binding
             self.channel.queue_bind(
                 exchange=self.exchange_name,
                 queue=self.queue_name,
@@ -83,7 +70,6 @@ class RabbitMQManager:
             alert_data: Dict com {type, message, severity, ...}
         """
         try:
-            # Verifica se está conectado
             if not self.connection or self.connection.is_closed:
                 print(f"[RABBITMQ] Não conectado - pulando alerta: {alert_data.get('type')}")
                 return
@@ -101,7 +87,7 @@ class RabbitMQManager:
                 routing_key='alert.critical',
                 body=json.dumps(message),
                 properties=pika.BasicProperties(
-                    delivery_mode=2,  # Persistente
+                    delivery_mode=2,
                     content_type='application/json',
                     priority=9
                 )
@@ -152,8 +138,6 @@ class RabbitMQManager:
             print(f"[RABBITMQ ERROR] Erro ao fechar: {e}")
 
 
-# ==================== WORKER EXEMPLO ====================
-
 class AlertConsumerWorker:
     """
     Worker que consome alertas críticos
@@ -174,13 +158,7 @@ class AlertConsumerWorker:
         print(f"Timestamp: {message.get('timestamp')}")
         print("=" * 60 + "\n")
         
-        # Aqui você pode:
-        # - Enviar email
-        # - Enviar SMS
-        # - Notificação push
-        # - Acionar alarme físico
-        # - Registrar em log externo
-    
+
     def start(self):
         """Inicia o worker"""
         print("=" * 60)
@@ -199,17 +177,13 @@ class AlertConsumerWorker:
             print("✗ Falha ao conectar")
 
 
-# ==================== TESTE ====================
-
 if __name__ == '__main__':
     import sys
     
     if len(sys.argv) > 1 and sys.argv[1] == 'worker':
-        # Modo worker
         worker = AlertConsumerWorker()
         worker.start()
     else:
-        # Teste de publicação
         print("=" * 60)
         print("TESTE RABBITMQ - ALERTA CRÍTICO")
         print("=" * 60)
@@ -217,7 +191,6 @@ if __name__ == '__main__':
         manager = RabbitMQManager()
         
         if manager.connect():
-            # Publica alerta de teste
             manager.publish_alert({
                 'type': 'test_alert',
                 'message': 'Teste de alerta crítico do sistema',
