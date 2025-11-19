@@ -761,20 +761,7 @@ MIT License - Livre para uso e modificação.
 
 ---
 
-**🌱 Desenvolvido com ❤️ por Atitus Educação - 2025**
-
 *Para dúvidas, abra uma issue no GitHub ou consulte os comentários no código.*
-
-## 🧑‍💻 Equipe
-
-| Nome | E-mail | Função | Responsabilidades |
-|------|---------|--------|------------------|
-| **Alan Scheibler** | 1130556@atitus.edu.br | Engenheiro de Hardware | Montagem física, integração de sensores e atuadores |
-| **Arthur Dezingrini** | 1135044@atitus.edu.br | Desenvolvedor Front-end | Criação do dashboard e integração com Flask |
-| **Bruno Silveira Serena Benevenuto dos Santos** | 1129601@atitus.edu.br | Documentação | Escrita e compilação da documentação do projeto |
-| **Gabriel Viecili** | 1135192@atitus.edu.br | Desenvolvedor Back-end | Desenvolvimento do servidor Flask e banco de dados |
-
----
 
 ## 🧩 Projetos Similares
 
